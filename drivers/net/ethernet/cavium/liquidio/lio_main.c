@@ -1263,13 +1263,19 @@ static int liquidio_stop_nic_module(struct octeon_device *oct)
 	struct lio *lio;
 
 	dev_dbg(&oct->pci_dev->dev, "Stopping network interfaces\n");
-	device_lock(&oct->pci_dev->dev);
+	/* C10 PATCH (DUT-only, NOT upstream): the device_lock() pair around
+	 * devlink teardown is a RECURSIVE grab of the dev->mutex the driver
+	 * core already holds for the removing task (added by 8d44b5cf6060);
+	 * result: unbind/rmmod D-stucks 100%, attached card unreleasable
+	 * (AGENTS C10).  The core holds the lock across ->remove, so the pair
+	 * is not only harmful but unnecessary.  Probe-site locking left
+	 * untouched (works empirically, boots 233-280).
+	 */
 	if (oct->devlink) {
 		devlink_unregister(oct->devlink);
 		devlink_free(oct->devlink);
 		oct->devlink = NULL;
 	}
-	device_unlock(&oct->pci_dev->dev);
 
 	if (!oct->ifcount) {
 		dev_err(&oct->pci_dev->dev, "Init for Octeon was not completed\n");
