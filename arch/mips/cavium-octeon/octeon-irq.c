@@ -2830,6 +2830,10 @@ int octeon_ciu3_errbits_disable_intsn(int node, int intsn)
 	cvmx_read_csr(isc_w1c_addr);
 	return 0;
 }
+/* Track V1: the shipped ovs-octeon3-ethernet.ko imports this (its sole gap vs our
+ * export table, measured 2026-11-18 boot; the card's p12 vendor kernel carries the
+ * export too -- grep of the payload ELF shows the name in __kstrtab). */
+EXPORT_SYMBOL_GPL(octeon_ciu3_errbits_disable_intsn);
 
 
 static int __init octeon_irq_init_ciu3(struct device_node *ciu_node,
