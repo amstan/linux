@@ -173,22 +173,22 @@ LEAF(_init_fpu)
 	sll	t0, t0, 5
 	bgez	t0, 1f				# 16 / 32 register mode?
 
-	dmtc1	t1, $f1
-	dmtc1	t1, $f3
-	dmtc1	t1, $f5
-	dmtc1	t1, $f7
-	dmtc1	t1, $f9
-	dmtc1	t1, $f11
-	dmtc1	t1, $f13
-	dmtc1	t1, $f15
-	dmtc1	t1, $f17
-	dmtc1	t1, $f19
-	dmtc1	t1, $f21
-	dmtc1	t1, $f23
-	dmtc1	t1, $f25
-	dmtc1	t1, $f27
-	dmtc1	t1, $f29
-	dmtc1	t1, $f31
+	.word	0x44ad0800 /* dmtc1 t1, $f1 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad1800 /* dmtc1 t1, $f3 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad2800 /* dmtc1 t1, $f5 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad3800 /* dmtc1 t1, $f7 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad4800 /* dmtc1 t1, $f9 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad5800 /* dmtc1 t1, $f11 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad6800 /* dmtc1 t1, $f13 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad7800 /* dmtc1 t1, $f15 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad8800 /* dmtc1 t1, $f17 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad9800 /* dmtc1 t1, $f19 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ada800 /* dmtc1 t1, $f21 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44adb800 /* dmtc1 t1, $f23 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44adc800 /* dmtc1 t1, $f25 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44add800 /* dmtc1 t1, $f27 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ade800 /* dmtc1 t1, $f29 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44adf800 /* dmtc1 t1, $f31 (vendor-identical DMTC1; octeon2 gas model refuses it) */
 1:
 #endif
 
@@ -227,22 +227,22 @@ LEAF(_init_fpu)
 	mtc1	t1, $f31
 #else
 	.set	mips3
-	dmtc1	t1, $f0
-	dmtc1	t1, $f2
-	dmtc1	t1, $f4
-	dmtc1	t1, $f6
-	dmtc1	t1, $f8
-	dmtc1	t1, $f10
-	dmtc1	t1, $f12
-	dmtc1	t1, $f14
-	dmtc1	t1, $f16
-	dmtc1	t1, $f18
-	dmtc1	t1, $f20
-	dmtc1	t1, $f22
-	dmtc1	t1, $f24
-	dmtc1	t1, $f26
-	dmtc1	t1, $f28
-	dmtc1	t1, $f30
+	.word	0x44ad0000 /* dmtc1 t1, $f0 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad1000 /* dmtc1 t1, $f2 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad2000 /* dmtc1 t1, $f4 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad3000 /* dmtc1 t1, $f6 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad4000 /* dmtc1 t1, $f8 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad5000 /* dmtc1 t1, $f10 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad6000 /* dmtc1 t1, $f12 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad7000 /* dmtc1 t1, $f14 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad8000 /* dmtc1 t1, $f16 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ad9000 /* dmtc1 t1, $f18 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ada000 /* dmtc1 t1, $f20 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44adb000 /* dmtc1 t1, $f22 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44adc000 /* dmtc1 t1, $f24 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44add000 /* dmtc1 t1, $f26 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44ade000 /* dmtc1 t1, $f28 (vendor-identical DMTC1; octeon2 gas model refuses it) */
+	.word	0x44adf000 /* dmtc1 t1, $f30 (vendor-identical DMTC1; octeon2 gas model refuses it) */
 #endif
 	jr	ra
 	END(_init_fpu)

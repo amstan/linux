@@ -31,6 +31,10 @@
 
 	.set	noreorder
 	.set	mips3
+	.set	push
+	.set	mips64r2
+	.set	fp=64
+	.set	hardfloat
 
 LEAF(_save_fp_context)
 	cfc1	t1, fcr31
