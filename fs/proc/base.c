@@ -91,6 +91,7 @@
 #include <asm/hardwall.h>
 #endif
 #include <trace/events/oom.h>
+#include <linux/msa.h>
 #include "internal.h"
 #include "fd.h"
 
@@ -755,7 +756,7 @@ static ssize_t mem_rw(struct file *file, char __user *buf,
 		goto free;
 
 	while (count > 0) {
-		int this_len = min_t(int, count, PAGE_SIZE);
+		ssize_t this_len = min_t(ssize_t, count, PAGE_SIZE);
 
 		if (write && copy_from_user(page, buf, this_len)) {
 			copied = -EFAULT;
@@ -856,7 +857,7 @@ static ssize_t environ_read(struct file *file, char __user *buf,
 		goto free;
 	while (count > 0) {
 		size_t this_len, max_len;
-		int retval;
+		ssize_t retval;
 
 		if (src >= (mm->env_end - mm->env_start))
 			break;
@@ -2676,6 +2677,150 @@ static int proc_pid_personality(struct seq_file *m, struct pid_namespace *ns,
 	return err;
 }
 
+#ifdef CONFIG_MICROSTATE_ACCT
+/*
+ * provides microstate accounting information
+ *
+ */
+static const char * const statenames[] = {
+	"User",
+	"System",
+	"Interruptible",
+	"Uninterruptible",
+	"OnRunQueue",
+	"Zombie",
+	"Stopped",
+	"Interrupted",
+	"Paging",
+	"Futex",
+	"Poll",
+	"Parked"
+};
+
+static int proc_tid_msa(struct task_struct *task, char *buffer)
+{
+	struct microstates *msp = &task->microstates;
+	msa_time_t now;
+	msa_time_t *tp;
+	struct microstates msp1;
+
+	memcpy(&msp1, msp, sizeof(*msp));
+	tp = msp1.timers;
+
+	switch (msp1.cur_state) {
+	case MSA_ONCPU_USER:
+	case MSA_ONCPU_SYS:
+	case MSA_ONRUNQUEUE:
+		now = msp1.last_change;
+		break;
+	default:
+		MSA_NOW(now);
+		tp[msp1.cur_state] += now - msp1.last_change;
+	}
+	return
+	  sprintf(buffer,
+		  "State:      %s\n"		\
+		  "Now:	       %15llu\n"	\
+		  "ONCPU_USER      %15llu\n"	\
+		  "ONCPU_SYS       %15llu\n"	\
+		  "INTERRUPTIBLE   %15llu\n"	\
+		  "UNINTERRUPTIBLE %15llu\n"	\
+		  "INTERRUPTED     %15llu\n"	\
+		  "RUNQUEUE        %15llu\n"	\
+		  "STOPPED         %15llu\n"	\
+		  "ZOMBIE          %15llu\n"	\
+		  "SLP_POLL        %15llu\n"	\
+		  "SLP_PAGING      %15llu\n"	\
+		  "SLP_FUTEX       %15llu\n"	\
+		  "PARKED          %15llu\n",	\
+		  msp1.cur_state >= 0 && msp1.cur_state < MSA_NR_STATES ?
+		  statenames[msp1.cur_state] : "Impossible",
+		  (unsigned long long)MSA_TO_NSEC(now),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_ONCPU_USER]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_ONCPU_SYS]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_INTERRUPTIBLE_SLEEP]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_UNINTERRUPTIBLE_SLEEP]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_INTERRUPTED]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_ONRUNQUEUE]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_STOPPED]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_ZOMBIE]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_POLL_SLEEP]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_PAGING_SLEEP]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_FUTEX_SLEEP]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_PARKED]));
+}
+
+/*
+ * Sum resource usage for self + children.
+ * Only a snapshot, don't worry about things changing under foot.
+ */
+
+static int proc_tgid_msa(struct task_struct *task, char *buffer)
+{
+	msa_time_t *tp;
+	msa_time_t *tp1;
+	struct microstates msp1;
+	struct microstates msp2;
+	int i;
+	msa_time_t now;
+
+	enum msa_thread_state cur_state = MSA_NR_STATES;
+
+	if (thread_group_empty(task))
+		return proc_tid_msa(task, buffer);
+
+	memset(&msp2, 0, sizeof msp2);
+	MSA_NOW(now);
+	read_lock(&tasklist_lock);
+	do {
+		msp1 = task->microstates;
+		if (msp1.cur_state < cur_state)
+			cur_state = msp1.cur_state;
+		for (i = 0, tp = msp1.timers, tp1 = msp2.timers;
+		     i < MSA_NR_STATES;
+		     i++)
+			*tp1++ += *tp++;
+		task = next_thread(task);
+	} while (!thread_group_leader(task));
+	read_unlock(&tasklist_lock);
+
+	tp = msp2.timers;
+
+	return
+	  sprintf(buffer,
+		  "State:         %s\n"		\
+		  "Now:	       %15llu\n"	\
+		  "ONCPU_USER     %15llu\n"	\
+		  "ONCPU_SYS      %15llu\n"	\
+		  "INTERRUPTIBLE  %15llu\n"	\
+		  "UNINTERRUPTIBLE%15llu\n"	\
+		  "INTERRUPTED    %15llu\n"	\
+		  "RUNQUEUE       %15llu\n"	\
+		  "STOPPED        %15llu\n"	\
+		  "ZOMBIE         %15llu\n"	\
+		  "SLP_POLL       %15llu\n"	\
+		  "SLP_PAGING     %15llu\n"	\
+		  "SLP_FUTEX      %15llu\n"	\
+		  "PARKED         %15llu\n",	\
+		  msp1.cur_state >= 0 && msp1.cur_state < MSA_NR_STATES ?
+		  statenames[msp1.cur_state] : "Impossible",
+		  (unsigned long long)MSA_TO_NSEC(now),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_ONCPU_USER]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_ONCPU_SYS]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_INTERRUPTIBLE_SLEEP]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_UNINTERRUPTIBLE_SLEEP]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_INTERRUPTED]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_ONRUNQUEUE]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_STOPPED]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_ZOMBIE]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_POLL_SLEEP]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_PAGING_SLEEP]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_FUTEX_SLEEP]),
+		  (unsigned long long)MSA_TO_NSEC(tp[MSA_PARKED]));
+}
+
+#endif /* CONFIG_MICROSTATE_ACCT */
+
 /*
  * Thread groups
  */
@@ -2775,6 +2920,9 @@ static const struct pid_entry tgid_base_stuff[] = {
 #endif
 #ifdef CONFIG_CHECKPOINT_RESTORE
 	REG("timers",	  S_IRUGO, proc_timers_operations),
+#endif
+#ifdef CONFIG_MICROSTATE_ACCT
+	INF("msa",	S_IRUGO, proc_tgid_msa),
 #endif
 };
 
@@ -2885,7 +3033,7 @@ void proc_flush_task(struct task_struct *task)
 	for (i = 0; i <= pid->level; i++) {
 		upid = &pid->numbers[i];
 		proc_flush_task_mnt(upid->ns->proc_mnt, upid->nr,
-					tgid->numbers[i].nr);
+				    tgid ? tgid->numbers[i].nr : 0);
 	}
 }
 
@@ -3126,6 +3274,9 @@ static const struct pid_entry tid_base_stuff[] = {
 	REG("gid_map",    S_IRUGO|S_IWUSR, proc_gid_map_operations),
 	REG("projid_map", S_IRUGO|S_IWUSR, proc_projid_map_operations),
 	REG("setgroups",  S_IRUGO|S_IWUSR, proc_setgroups_operations),
+#endif
+#ifdef CONFIG_MICROSTATE_ACCT
+	INF("msa",	 S_IRUGO, proc_tid_msa),
 #endif
 };
 

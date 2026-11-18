@@ -36,6 +36,10 @@
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 
+#ifdef CONFIG_PAX_PAGEEXEC
+#include <asm/esr.h>
+#endif
+
 static const char *fault_name(unsigned int esr);
 
 /*
@@ -121,6 +125,13 @@ static void __do_user_fault(struct task_struct *tsk, unsigned long addr,
 		show_pte(tsk->mm, addr);
 		show_regs(regs);
 	}
+
+#ifdef CONFIG_PAX_PAGEEXEC
+	if (esr & ESR_EL0_ISS_IABT) {
+		pax_report_fault(regs, (void *)regs->pc, (void *)regs->sp);
+		do_group_exit(SIGKILL);
+	}
+#endif
 
 	tsk->thread.fault_address = addr;
 	si.si_signo = sig;
@@ -210,7 +221,7 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 	 * If we're in an interrupt or have no user context, we must not take
 	 * the fault.
 	 */
-	if (in_atomic() || !mm)
+	if (!mm || pagefault_disabled())
 		goto no_context;
 
 	if (user_mode(regs))
@@ -333,6 +344,33 @@ no_context:
 	return 0;
 }
 
+#ifdef CONFIG_PAX_PAGEEXEC
+void pax_report_insns(struct pt_regs *regs, void *pc, void *sp)
+{
+	long i;
+
+	printk(KERN_ERR "PAX: bytes at PC: ");
+	for (i = 0; i < 20; i++) {
+		unsigned char c;
+		if (get_user(c, (__force unsigned char __user *)pc+i))
+			printk(KERN_CONT "?? ");
+		else
+			printk(KERN_CONT "%02x ", c);
+	}
+	printk("\n");
+
+	printk(KERN_ERR "PAX: bytes at SP-4: ");
+	for (i = -1; i < 20; i++) {
+		unsigned long c;
+		if (get_user(c, (__force unsigned long __user *)sp+i))
+			printk(KERN_CONT "???????? ");
+		else
+			printk(KERN_CONT "%08lx ", c);
+	}
+	printk("\n");
+}
+#endif
+
 /*
  * First Level Translation Fault Handler
  *
@@ -362,17 +400,6 @@ static int __kprobes do_translation_fault(unsigned long addr,
 }
 
 /*
- * Some section permission faults need to be handled gracefully.  They can
- * happen due to a __{get,put}_user during an oops.
- */
-static int do_sect_fault(unsigned long addr, unsigned int esr,
-			 struct pt_regs *regs)
-{
-	do_bad_area(addr, esr, regs);
-	return 0;
-}
-
-/*
  * This abort handler always returns "fault".
  */
 static int do_bad(unsigned long addr, unsigned int esr, struct pt_regs *regs)
@@ -395,12 +422,12 @@ static struct fault_info {
 	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 2 translation fault"	},
 	{ do_page_fault,	SIGSEGV, SEGV_MAPERR,	"level 3 translation fault"	},
 	{ do_bad,		SIGBUS,  0,		"reserved access flag fault"	},
-	{ do_bad,		SIGSEGV, SEGV_ACCERR,	"level 1 access flag fault"	},
-	{ do_bad,		SIGSEGV, SEGV_ACCERR,	"level 2 access flag fault"	},
+	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 1 access flag fault"	},
+	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 2 access flag fault"	},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 3 access flag fault"	},
 	{ do_bad,		SIGBUS,  0,		"reserved permission fault"	},
-	{ do_bad,		SIGSEGV, SEGV_ACCERR,	"level 1 permission fault"	},
-	{ do_sect_fault,	SIGSEGV, SEGV_ACCERR,	"level 2 permission fault"	},
+	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 1 permission fault"	},
+	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 2 permission fault"	},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 3 permission fault"	},
 	{ do_bad,		SIGBUS,  0,		"synchronous external abort"	},
 	{ do_bad,		SIGBUS,  0,		"asynchronous external abort"	},

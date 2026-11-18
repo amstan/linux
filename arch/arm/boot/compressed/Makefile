@@ -138,6 +138,25 @@ endif
 ifeq ($(CONFIG_CPU_ENDIAN_BE8),y)
 LDFLAGS_vmlinux += --be8
 endif
+
+# Passing endian compilation flag in both CPPFLAGS ad CFLAGS. There are
+# places where CFLAGS alone are used (cmd_record_mcount). And it has to
+# be in CPPFLAGS because it affects what macros (__ARMEB__, __BYTE_ORDER__,
+# __FLOAT_WORD_ORDER__) are defined. So replication of flag seems to be
+# good compromise
+ifeq ($(CONFIG_CPU_BIG_ENDIAN),y)
+KBUILD_CPPFLAGS	+= -mbig-endian
+KBUILD_CFLAGS	+= -mbig-endian
+AS		+= -EB
+LD		+= -EB
+else
+KBUILD_CPPFLAGS	+= -mlittle-endian
+KBUILD_CFLAGS	+= -mlittle-endian
+AS		+= -EL
+LD		+= -EL
+endif
+
+
 # ?
 LDFLAGS_vmlinux += -p
 # Report unresolved symbol references
@@ -195,8 +214,11 @@ CFLAGS_font.o := -Dstatic=
 $(obj)/font.c: $(FONTC)
 	$(call cmd,shipped)
 
-$(obj)/vmlinux.lds: $(obj)/vmlinux.lds.in arch/arm/boot/Makefile $(KCONFIG_CONFIG)
+$(obj)/vmlinux.lds.S: $(obj)/vmlinux.lds.in arch/arm/boot/Makefile $(KCONFIG_CONFIG)
 	@sed "$(SEDFLAGS)" < $< > $@
+
+$(obj)/vmlinux.lds: $(obj)/vmlinux.lds.S
+	$(call if_changed,cpp_lds_S)
 
 $(obj)/hyp-stub.S: $(srctree)/arch/$(SRCARCH)/kernel/hyp-stub.S
 	$(call cmd,shipped)

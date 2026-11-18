@@ -18,6 +18,7 @@ config ARM_DT_BL_CPUFREQ
 config ARM_EXYNOS_CPUFREQ
 	bool "SAMSUNG EXYNOS SoCs"
 	depends on ARCH_EXYNOS
+	select CPU_FREQ_TABLE
 	default y
 	help
 	  This adds the CPUFreq driver common part for Samsung
@@ -46,6 +47,7 @@ config ARM_EXYNOS5250_CPUFREQ
 config ARM_EXYNOS5440_CPUFREQ
 	def_bool SOC_EXYNOS5440
 	depends on HAVE_CLK && PM_OPP && OF
+	select CPU_FREQ_TABLE
 	help
 	  This adds the CPUFreq driver for Samsung EXYNOS5440
 	  SoC. The nature of exynos5440 clock controller is
@@ -150,3 +152,19 @@ config ARM_SPEAR_CPUFREQ
 	default y
 	help
 	  This adds the CPUFreq driver support for SPEAr SOCs.
+
+config ARM_TEGRA_CPUFREQ
+	bool "TEGRA CPUFreq support"
+	depends on ARCH_TEGRA
+	select CPU_FREQ_TABLE
+	default y
+	help
+	  This adds the CPUFreq driver support for TEGRA SOCs.
+
+config ARM_VEXPRESS_SPC_CPUFREQ
+        tristate "Versatile Express SPC based CPUfreq driver"
+        select ARM_BIG_LITTLE_CPUFREQ
+        depends on ARCH_VEXPRESS_SPC
+        help
+          This add the CPUfreq driver support for Versatile Express
+	  big.LITTLE platforms using SPC for power management.

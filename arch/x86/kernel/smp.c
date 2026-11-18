@@ -253,7 +253,10 @@ void smp_reschedule_interrupt(struct pt_regs *regs)
 {
 	ack_APIC_irq();
 	inc_irq_stat(irq_resched_count);
+	irq_enter();
+	msa_start_irq(RESCHEDULE_VECTOR);
 	scheduler_ipi();
+	msa_irq_exit(RESCHEDULE_VECTOR, regs->cs != __KERNEL_CS);
 	/*
 	 * KVM uses this interrupt to force a cpu out of guest mode
 	 */
@@ -263,18 +266,20 @@ void smp_call_function_interrupt(struct pt_regs *regs)
 {
 	ack_APIC_irq();
 	irq_enter();
+	msa_start_irq(CALL_FUNCTION_SINGLE_VECTOR);
 	generic_smp_call_function_interrupt();
 	inc_irq_stat(irq_call_count);
-	irq_exit();
+	msa_irq_exit(CALL_FUNCTION_SINGLE_VECTOR, regs->cs != __KERNEL_CS);
 }
 
 void smp_call_function_single_interrupt(struct pt_regs *regs)
 {
 	ack_APIC_irq();
 	irq_enter();
+	msa_start_irq(CALL_FUNCTION_SINGLE_VECTOR);
 	generic_smp_call_function_single_interrupt();
 	inc_irq_stat(irq_call_count);
-	irq_exit();
+	msa_irq_exit(CALL_FUNCTION_SINGLE_VECTOR, regs->cs != __KERNEL_CS);
 }
 
 static int __init nonmi_ipi_setup(char *str)
@@ -285,7 +290,7 @@ static int __init nonmi_ipi_setup(char *str)
 
 __setup("nonmi_ipi", nonmi_ipi_setup);
 
-struct smp_ops smp_ops = {
+struct smp_ops smp_ops __read_only = {
 	.smp_prepare_boot_cpu	= native_smp_prepare_boot_cpu,
 	.smp_prepare_cpus	= native_smp_prepare_cpus,
 	.smp_cpus_done		= native_smp_cpus_done,

@@ -84,6 +84,11 @@ static unsigned long arch_get_unmapped_area_common(struct file *filp,
 		do_color_align = 1;
 
 	/* requesting a specific address */
+
+#ifdef CONFIG_PAX_RANDMMAP
+	if (!(current->mm->pax_flags & MF_PAX_RANDMMAP))
+#endif
+
 	if (addr) {
 		if (do_color_align)
 			addr = COLOUR_ALIGN(addr, pgoff);
@@ -91,8 +96,7 @@ static unsigned long arch_get_unmapped_area_common(struct file *filp,
 			addr = PAGE_ALIGN(addr);
 
 		vma = find_vma(mm, addr);
-		if (TASK_SIZE - len >= addr &&
-		    (!vma || addr + len <= vma->vm_start))
+		if (TASK_SIZE - len >= addr && check_heap_stack_gap(vma, addr, len))
 			return addr;
 	}
 
@@ -146,6 +150,10 @@ void arch_pick_mmap_layout(struct mm_struct *mm)
 {
 	unsigned long random_factor = 0UL;
 
+#ifdef CONFIG_PAX_RANDMMAP
+	if (!(mm->pax_flags & MF_PAX_RANDMMAP))
+#endif
+
 	if (current->flags & PF_RANDOMIZE) {
 		random_factor = get_random_int();
 		random_factor = random_factor << PAGE_SHIFT;
@@ -157,15 +165,28 @@ void arch_pick_mmap_layout(struct mm_struct *mm)
 
 	if (mmap_is_legacy()) {
 		mm->mmap_base = TASK_UNMAPPED_BASE + random_factor;
+
+#ifdef CONFIG_PAX_RANDMMAP
+		if (mm->pax_flags & MF_PAX_RANDMMAP)
+			mm->mmap_base += mm->delta_mmap;
+#endif
+
 		mm->get_unmapped_area = arch_get_unmapped_area;
 		mm->unmap_area = arch_unmap_area;
 	} else {
 		mm->mmap_base = mmap_base(random_factor);
+
+#ifdef CONFIG_PAX_RANDMMAP
+		if (mm->pax_flags & MF_PAX_RANDMMAP)
+			mm->mmap_base -= mm->delta_mmap + mm->delta_stack;
+#endif
+
 		mm->get_unmapped_area = arch_get_unmapped_area_topdown;
 		mm->unmap_area = arch_unmap_area_topdown;
 	}
 }
 
+#ifndef CONFIG_PAX_ASLR
 static inline unsigned long brk_rnd(void)
 {
 	unsigned long rnd = get_random_int();
@@ -192,6 +213,7 @@ unsigned long arch_randomize_brk(struct mm_struct *mm)
 
 	return ret;
 }
+#endif
 
 int __virt_addr_valid(const volatile void *kaddr)
 {

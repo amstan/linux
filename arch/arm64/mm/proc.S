@@ -111,12 +111,12 @@ ENTRY(__cpu_setup)
 	bl	__flush_dcache_all
 	mov	lr, x28
 	ic	iallu				// I+BTB cache invalidate
-	dsb	sy
+	tlbi	vmalle1is			// invalidate I + D TLBs
+	dsb	ish
 
 	mov	x0, #3 << 20
 	msr	cpacr_el1, x0			// Enable FP/ASIMD
 	msr	mdscr_el1, xzr			// Reset mdscr_el1
-	tlbi	vmalle1is			// invalidate I + D TLBs
 	/*
 	 * Memory region attributes for LPAE:
 	 *
@@ -142,11 +142,14 @@ ENTRY(__cpu_setup)
 	mrs	x0, sctlr_el1
 	bic	x0, x0, x5			// clear bits
 	orr	x0, x0, x6			// set bits
+#ifdef CONFIG_CPU_BIG_ENDIAN
+        orr	x0, x0, #(3<<24)		// set EE and EOE bits
+#endif
 	/*
 	 * Set/prepare TCR and TTBR. We use 512GB (39-bit) address range for
 	 * both user and kernel.
 	 */
-	ldr	x10, =TCR_TxSZ(VA_BITS) | TCR_FLAGS | TCR_IPS_40BIT | \
+	ldr	x10, =TCR_TxSZ(VA_BITS) | TCR_FLAGS | TCR_IPS_BITS | \
 		      TCR_ASID16 | (1 << 31)
 #ifdef CONFIG_ARM64_64K_PAGES
 	orr	x10, x10, TCR_TG0_64K

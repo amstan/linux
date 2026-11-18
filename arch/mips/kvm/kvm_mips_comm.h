@@ -11,6 +11,7 @@
 
 #ifndef __KVM_MIPS_COMMPAGE_H__
 #define __KVM_MIPS_COMMPAGE_H__
+#include <asm/kvm_mips_te.h>
 
 struct kvm_mips_commpage {
 	struct mips_coproc cop0;	/* COP0 state is mapped into Guest kernel via commpage */

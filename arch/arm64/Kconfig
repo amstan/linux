@@ -1,6 +1,8 @@
 config ARM64
 	def_bool y
+	select ARCH_BINFMT_ELF_RANDOMIZE_PIE
 	select ARCH_HAS_ATOMIC64_DEC_IF_POSITIVE
+	select ARCH_USE_CMPXCHG_LOCKREF
 	select ARCH_SUPPORTS_ATOMIC_RMW
 	select ARCH_WANT_OPTIONAL_GPIOLIB
 	select ARCH_WANT_COMPAT_IPC_PARSE_VERSION
@@ -8,25 +10,39 @@ config ARM64
 	select ARM_AMBA
 	select ARM_ARCH_TIMER
 	select ARM_GIC
+	select ARM_GIC_V3
+	select ARM_GIC_V3_ITS
+	select BUILDTIME_EXTABLE_SORT
 	select CLONE_BACKWARDS
 	select COMMON_CLK
 	select GENERIC_CLOCKEVENTS
 	select GENERIC_IOMAP
 	select GENERIC_IRQ_PROBE
 	select GENERIC_IRQ_SHOW
+	select GENERIC_SCHED_CLOCK
 	select GENERIC_SMP_IDLE_THREAD
 	select GENERIC_TIME_VSYSCALL
+	select HANDLE_DOMAIN_IRQ
 	select HARDIRQS_SW_RESEND
+	select IRQ_FORCED_THREADING
+	select HAVE_ARCH_KGDB
 	select HAVE_ARCH_TRACEHOOK
+	select HAVE_C_RECORDMCOUNT
 	select HAVE_DEBUG_BUGVERBOSE
 	select HAVE_DEBUG_KMEMLEAK
 	select HAVE_DMA_API_DEBUG
 	select HAVE_DMA_ATTRS
+	select HAVE_DMA_CONTIGUOUS if !ARCH_THUNDER
+	select HAVE_DYNAMIC_FTRACE
+	select HAVE_FTRACE_MCOUNT_RECORD
+	select HAVE_FUNCTION_GRAPH_TRACER
+	select HAVE_FUNCTION_TRACER
 	select HAVE_GENERIC_DMA_COHERENT
 	select HAVE_GENERIC_HARDIRQS
 	select HAVE_HW_BREAKPOINT if PERF_EVENTS
 	select HAVE_MEMBLOCK
 	select HAVE_PERF_EVENTS
+	select HAVE_PREEMPT_LAZY
 	select IRQ_DOMAIN
 	select MODULES_USE_ELF_RELA
 	select NO_BOOTMEM
@@ -51,7 +67,7 @@ config MMU
 	def_bool y
 
 config NO_IOPORT
-	def_bool y
+	def_bool y if !PCI
 
 config STACKTRACE_SUPPORT
 	def_bool y
@@ -96,6 +112,9 @@ config SWIOTLB
 config IOMMU_HELPER
 	def_bool SWIOTLB
 
+config ARCH_SUPPORTS_48BIT_PA
+	def_bool n
+
 source "init/Kconfig"
 
 source "kernel/Kconfig.freezer"
@@ -112,6 +131,51 @@ config ARCH_VEXPRESS
 	  This enables support for the ARMv8 software model (Versatile
 	  Express).
 
+config ARCH_THUNDER
+	bool "Cavium Inc. Thunder SoC Family"
+	select PCI
+	select PCI_THUNDER
+	select PCI_HOST_GENERIC
+	select ARCH_SUPPORTS_48BIT_PA
+	select ARCH_REQUIRE_GPIOLIB
+	select COMMON_CLK_VERSATILE
+	select SATA_AHCI
+	select SATA_AHCI_PLATFORM
+	select ATA
+	select NET_VENDOR_CAVIUM
+	select PHYLIB
+	select MARVELL_PHY
+	select BROADCOM_PHY
+	select BCM87XX_PHY
+	select IOMMU_SUPPORT
+	help
+	  This enables support for Cavium's Thunder Family of SoCs.
+
+menu   "Cavium ThunderX errata"
+
+config THUNDERX_PASS1_ERRATA_22558
+        bool "Cavium ThunderX erratum 22558"
+        depends on ARCH_THUNDER
+        def_bool ARCH_THUNDER
+        help
+                Enable workaround for erratum 22558.
+
+config THUNDERX_PASS1_ERRATA_23154
+        bool "Cavium ThunderX erratum 23154"
+        depends on ARCH_THUNDER
+        def_bool ARCH_THUNDER
+        help
+                Enable workaround for erratum 23154.
+
+config THUNDERX_PASS1_ERRATA_23144
+        bool "Cavium ThunderX erratum 23144"
+        depends on ARCH_THUNDER && NUMA
+        def_bool ARCH_THUNDER
+        help
+                Enable workaround for erratum 23144.
+
+endmenu
+
 endmenu
 
 menu "Bus support"
@@ -119,9 +183,38 @@ menu "Bus support"
 config ARM_AMBA
 	bool
 
+config PCI
+	select ARCH_SUPPORTS_MSI
+	bool "PCI support"
+	help
+	  This feature enables support for PCIe bus system. If you say Y
+	  here, the kernel will include drivers and infrastructure code
+	  to support PCIe bus devices.
+
+config PCI_DOMAINS
+	def_bool PCI
+
+config PCI_DOMAINS_GENERIC
+	def_bool PCI
+
+config PCI_SYSCALL
+	def_bool PCI
+
+source "drivers/pci/Kconfig"
+source "drivers/pci/pcie/Kconfig"
+source "drivers/pci/hotplug/Kconfig"
+
 endmenu
 
 menu "Kernel Features"
+
+config CPU_BIG_ENDIAN
+	bool "Build big-endian kernel"
+	help
+	  Say Y if you plan on running a kernel in big-endian mode.
+	  Note that your board must be properly built and your board
+	  port must properly enable any big-endian related features
+	  of your chipset/board/processor.
 
 config ARM64_64K_PAGES
 	bool "Enable 64KB pages support"
@@ -146,10 +239,18 @@ config SMP
 	  If you don't know what to do here, say N.
 
 config NR_CPUS
-	int "Maximum number of CPUs (2-32)"
-	range 2 32
+	int "Maximum number of CPUs (2-4096)"
+	range 2 4096
 	depends on SMP
+	default "48" if ARCH_THUNDER
 	default "4"
+
+config HOTPLUG_CPU
+	bool "Support for hot-pluggable CPUs"
+	depends on SMP
+	help
+	  Say Y here to experiment with turning CPUs off and on.  CPUs
+	  can be controlled through /sys/devices/system/cpu.
 
 source kernel/Kconfig.preempt
 
@@ -181,7 +282,25 @@ config HW_PERF_EVENTS
 	  Enable hardware performance counter support for perf events. If
 	  disabled, perf events will use software events only.
 
+config SYS_SUPPORTS_HUGETLBFS
+	def_bool y
+
+config ARCH_WANT_GENERAL_HUGETLB
+	def_bool y
+
+config ARCH_WANT_HUGE_PMD_SHARE
+	def_bool y if !ARM64_64K_PAGES
+
+config HAVE_ARCH_TRANSPARENT_HUGEPAGE
+	def_bool y
+
 source "mm/Kconfig"
+
+config FORCE_MAX_ZONEORDER
+	int
+	default "14" if (ARM64_64K_PAGES && TRANSPARENT_HUGEPAGE)
+	default "13" if (ARCH_THUNDER && !ARM64_64K_PAGES)
+	default "11"
 
 endmenu
 
@@ -210,9 +329,13 @@ menu "Userspace binary formats"
 source "fs/Kconfig.binfmt"
 
 config COMPAT
+	def_bool y
+	depends on AARCH32_EL0 || ARM64_ILP32
+	select COMPAT_BINFMT_ELF
+
+config AARCH32_EL0
 	bool "Kernel support for 32-bit EL0"
 	depends on !ARM64_64K_PAGES
-	select COMPAT_BINFMT_ELF
 	select HAVE_UID16
 	select OLD_SIGSUSPEND3
 	select COMPAT_OLD_SIGACTION
@@ -224,9 +347,16 @@ config COMPAT
 
 	  If you want to execute 32-bit userspace applications, say Y.
 
+config ARM64_ILP32
+	bool "Kernel support for ILP32"
+	help
+	  This option enables support for AArch64 ILP32 user space.  ILP32
+	  is an ABI where long and pointers are 32bits but it uses the AARCH64
+	  instruction set.
+
 config SYSVIPC_COMPAT
 	def_bool y
-	depends on COMPAT && SYSVIPC
+	depends on AARCH32_EL0 && SYSVIPC
 
 endmenu
 

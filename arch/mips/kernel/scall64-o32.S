@@ -23,6 +23,7 @@
 #include <asm/thread_info.h>
 #include <asm/unistd.h>
 #include <asm/sysmips.h>
+#include <asm/msa_calling.h>
 
 	.align	5
 NESTED(handle_sys, PT_SIZE, sp)
@@ -31,6 +32,7 @@ NESTED(handle_sys, PT_SIZE, sp)
 	TRACE_IRQS_ON_RELOAD
 	STI
 	.set	at
+	MSA_KERNEL
 	ld	t1, PT_EPC(sp)		# skip syscall on return
 
 	dsubu	t0, v0, __NR_O32_Linux	# check syscall number
@@ -460,9 +462,9 @@ sys_call_table:
 	PTR	compat_sys_clock_nanosleep	/* 4265 */
 	PTR	sys_tgkill
 	PTR	compat_sys_utimes
-	PTR	sys_ni_syscall			/* sys_mbind */
-	PTR	sys_ni_syscall			/* sys_get_mempolicy */
-	PTR	sys_ni_syscall			/* 4270 sys_set_mempolicy */
+	PTR	compat_sys_mbind
+	PTR	compat_sys_get_mempolicy
+	PTR	compat_sys_set_mempolicy	/* 4270 */
 	PTR	compat_sys_mq_open
 	PTR	sys_mq_unlink
 	PTR	compat_sys_mq_timedsend
@@ -479,7 +481,7 @@ sys_call_table:
 	PTR	sys_inotify_init
 	PTR	sys_inotify_add_watch		/* 4285 */
 	PTR	sys_inotify_rm_watch
-	PTR	sys_migrate_pages
+	PTR	compat_sys_migrate_pages
 	PTR	compat_sys_openat
 	PTR	sys_mkdirat
 	PTR	sys_mknodat			/* 4290 */
@@ -541,4 +543,5 @@ sys_call_table:
 	PTR	compat_sys_process_vm_writev
 	PTR	sys_kcmp
 	PTR	sys_finit_module
+	PTR	sys_msa
 	.size	sys_call_table,.-sys_call_table

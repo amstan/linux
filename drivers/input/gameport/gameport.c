@@ -87,12 +87,12 @@ static int gameport_measure_speed(struct gameport *gameport)
 	tx = 1 << 30;
 
 	for(i = 0; i < 50; i++) {
-		local_irq_save(flags);
+		local_irq_save_nort(flags);
 		GET_TIME(t1);
 		for (t = 0; t < 50; t++) gameport_read(gameport);
 		GET_TIME(t2);
 		GET_TIME(t3);
-		local_irq_restore(flags);
+		local_irq_restore_nort(flags);
 		udelay(i * 10);
 		if ((t = DELTA(t2,t1) - DELTA(t3,t2)) < tx) tx = t;
 	}
@@ -111,11 +111,11 @@ static int gameport_measure_speed(struct gameport *gameport)
 	tx = 1 << 30;
 
 	for(i = 0; i < 50; i++) {
-		local_irq_save(flags);
+		local_irq_save_nort(flags);
 		rdtscl(t1);
 		for (t = 0; t < 50; t++) gameport_read(gameport);
 		rdtscl(t2);
-		local_irq_restore(flags);
+		local_irq_restore_nort(flags);
 		udelay(i * 10);
 		if (t2 - t1 < tx) tx = t2 - t1;
 	}
@@ -487,14 +487,14 @@ EXPORT_SYMBOL(gameport_set_phys);
  */
 static void gameport_init_port(struct gameport *gameport)
 {
-	static atomic_t gameport_no = ATOMIC_INIT(0);
+	static atomic_unchecked_t gameport_no = ATOMIC_INIT(0);
 
 	__module_get(THIS_MODULE);
 
 	mutex_init(&gameport->drv_mutex);
 	device_initialize(&gameport->dev);
 	dev_set_name(&gameport->dev, "gameport%lu",
-			(unsigned long)atomic_inc_return(&gameport_no) - 1);
+			(unsigned long)atomic_inc_return_unchecked(&gameport_no) - 1);
 	gameport->dev.bus = &gameport_bus;
 	gameport->dev.release = gameport_release_port;
 	if (gameport->parent)

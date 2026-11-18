@@ -114,6 +114,9 @@ static void sd_read_capacity(struct scsi_disk *sdkp, unsigned char *buffer);
 static void scsi_disk_release(struct device *cdev);
 static void sd_print_sense_hdr(struct scsi_disk *, struct scsi_sense_hdr *);
 static void sd_print_result(struct scsi_disk *, int);
+#ifdef CONFIG_BLK_DEV_REMOVE
+static int sd_blkdev_remove(struct gendisk *disk, dev_t dev);
+#endif
 
 static DEFINE_SPINLOCK(sd_index_lock);
 static DEFINE_IDA(sd_index_ida);
@@ -1514,6 +1517,9 @@ static const struct block_device_operations sd_fops = {
 	.check_events		= sd_check_events,
 	.revalidate_disk	= sd_revalidate_disk,
 	.unlock_native_capacity	= sd_unlock_native_capacity,
+#ifdef CONFIG_BLK_DEV_REMOVE
+	.remove                 = sd_blkdev_remove,
+#endif
 };
 
 /**
@@ -2932,7 +2938,7 @@ static int sd_probe(struct device *dev)
 	sdkp->disk = gd;
 	sdkp->index = index;
 	atomic_set(&sdkp->openers, 0);
-	atomic_set(&sdkp->device->ioerr_cnt, 0);
+	atomic_set_unchecked(&sdkp->device->ioerr_cnt, 0);
 
 	if (!sdp->request_queue->rq_timeout) {
 		if (sdp->type != TYPE_MOD)
@@ -2945,7 +2951,7 @@ static int sd_probe(struct device *dev)
 	device_initialize(&sdkp->dev);
 	sdkp->dev.parent = dev;
 	sdkp->dev.class = &sd_disk_class;
-	dev_set_name(&sdkp->dev, dev_name(dev));
+	dev_set_name(&sdkp->dev, "%s", dev_name(dev));
 
 	if (device_add(&sdkp->dev))
 		goto out_free_index;
@@ -3125,6 +3131,38 @@ done:
 	scsi_disk_put(sdkp);
 	return ret;
 }
+
+#ifdef CONFIG_BLK_DEV_REMOVE
+static void sd_blkdev_remove_callback(struct device *dev)
+{
+	scsi_remove_device(to_scsi_device(dev));
+}
+
+static int sd_blkdev_remove(struct gendisk *disk, dev_t dev)
+{
+	struct scsi_disk *sdisk;
+	struct scsi_device *sdev;
+	struct Scsi_Host *host;
+	int ret = 0;
+
+	if (!disk)
+		return -ENODEV;
+
+	if (!(sdisk = scsi_disk(disk)))
+		return -ENODEV;
+
+	if (!(sdev = sdisk->device))
+		return -ENODEV;
+
+	if (!(host = sdev->host))
+		return -ENODEV;
+
+	ret = device_schedule_callback(&sdev->sdev_gendev,
+				       sd_blkdev_remove_callback);
+
+	return ret;
+}
+#endif
 
 /**
  *	init_sd - entry point for this driver (both when built in or when

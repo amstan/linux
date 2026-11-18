@@ -36,6 +36,7 @@
 #include <linux/uaccess.h>
 #include <linux/io.h>
 #include <linux/kdebug.h>
+#include <linux/highmem.h>
 
 #include <asm/pgtable.h>
 #include <asm/ldt.h>
@@ -65,6 +66,7 @@ asmlinkage void ret_from_kernel_thread(void) __asm__("ret_from_kernel_thread");
 unsigned long thread_saved_pc(struct task_struct *tsk)
 {
 	return ((unsigned long *)tsk->thread.sp)[3];
+//XXX	return tsk->thread.eip;
 }
 
 void __show_regs(struct pt_regs *regs, int all)
@@ -74,19 +76,18 @@ void __show_regs(struct pt_regs *regs, int all)
 	unsigned long sp;
 	unsigned short ss, gs;
 
-	if (user_mode_vm(regs)) {
+	if (user_mode(regs)) {
 		sp = regs->sp;
 		ss = regs->ss & 0xffff;
-		gs = get_user_gs(regs);
 	} else {
 		sp = kernel_stack_pointer(regs);
 		savesegment(ss, ss);
-		savesegment(gs, gs);
 	}
+	gs = get_user_gs(regs);
 
 	printk(KERN_DEFAULT "EIP: %04x:[<%08lx>] EFLAGS: %08lx CPU: %d\n",
 			(u16)regs->cs, regs->ip, regs->flags,
-			smp_processor_id());
+			raw_smp_processor_id());
 	print_symbol("EIP is at %s\n", regs->ip);
 
 	printk(KERN_DEFAULT "EAX: %08lx EBX: %08lx ECX: %08lx EDX: %08lx\n",
@@ -128,20 +129,21 @@ void release_thread(struct task_struct *dead_task)
 int copy_thread(unsigned long clone_flags, unsigned long sp,
 	unsigned long arg, struct task_struct *p)
 {
-	struct pt_regs *childregs = task_pt_regs(p);
+	struct pt_regs *childregs = task_stack_page(p) + THREAD_SIZE - sizeof(struct pt_regs) - 8;
 	struct task_struct *tsk;
 	int err;
 
 	p->thread.sp = (unsigned long) childregs;
 	p->thread.sp0 = (unsigned long) (childregs+1);
+	p->tinfo.lowest_stack = (unsigned long)task_stack_page(p);
 
 	if (unlikely(p->flags & PF_KTHREAD)) {
 		/* kernel thread */
 		memset(childregs, 0, sizeof(struct pt_regs));
 		p->thread.ip = (unsigned long) ret_from_kernel_thread;
-		task_user_gs(p) = __KERNEL_STACK_CANARY;
-		childregs->ds = __USER_DS;
-		childregs->es = __USER_DS;
+		savesegment(gs, childregs->gs);
+		childregs->ds = __KERNEL_DS;
+		childregs->es = __KERNEL_DS;
 		childregs->fs = __KERNEL_PERCPU;
 		childregs->bx = sp;	/* function */
 		childregs->bp = arg;
@@ -214,6 +216,35 @@ start_thread(struct pt_regs *regs, unsigned long new_ip, unsigned long new_sp)
 }
 EXPORT_SYMBOL_GPL(start_thread);
 
+#ifdef CONFIG_PREEMPT_RT_FULL
+static void switch_kmaps(struct task_struct *prev_p, struct task_struct *next_p)
+{
+	int i;
+
+	/*
+	 * Clear @prev's kmap_atomic mappings
+	 */
+	for (i = 0; i < prev_p->kmap_idx; i++) {
+		int idx = i + KM_TYPE_NR * smp_processor_id();
+		pte_t *ptep = kmap_pte - idx;
+
+		kpte_clear_flush(ptep, __fix_to_virt(FIX_KMAP_BEGIN + idx));
+	}
+	/*
+	 * Restore @next_p's kmap_atomic mappings
+	 */
+	for (i = 0; i < next_p->kmap_idx; i++) {
+		int idx = i + KM_TYPE_NR * smp_processor_id();
+
+		if (!pte_none(next_p->kmap_pte[i]))
+			set_pte(kmap_pte - idx, next_p->kmap_pte[i]);
+	}
+}
+#else
+static inline void
+switch_kmaps(struct task_struct *prev_p, struct task_struct *next_p) { }
+#endif
+
 
 /*
  *	switch_to(x,y) should switch tasks from x to y.
@@ -248,7 +279,7 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 	struct thread_struct *prev = &prev_p->thread,
 				 *next = &next_p->thread;
 	int cpu = smp_processor_id();
-	struct tss_struct *tss = &per_cpu(init_tss, cpu);
+	struct tss_struct *tss = init_tss + cpu;
 	fpu_switch_t fpu;
 
 	/* never put a printk in __switch_to... printk() calls wake_up*() indirectly */
@@ -272,6 +303,10 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 	 */
 	lazy_save_gs(prev->gs);
 
+#ifdef CONFIG_PAX_MEMORY_UDEREF
+	__set_fs(task_thread_info(next_p)->addr_limit);
+#endif
+
 	/*
 	 * Load the per-thread Thread-Local Storage descriptor.
 	 */
@@ -293,6 +328,8 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 		     task_thread_info(next_p)->flags & _TIF_WORK_CTXSW_NEXT))
 		__switch_to_xtra(prev_p, next_p, tss);
 
+	switch_kmaps(prev_p, next_p);
+
 	/*
 	 * Leave lazy mode, flushing any hypercalls made here.
 	 * This must be done before restoring TLS segments so
@@ -302,6 +339,9 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 	 */
 	arch_end_context_switch(next_p);
 
+	this_cpu_write(current_task, next_p);
+	this_cpu_write(current_tinfo, &next_p->tinfo);
+
 	/*
 	 * Restore %gs if needed (which is common)
 	 */
@@ -309,8 +349,6 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 		lazy_load_gs(next->gs);
 
 	switch_fpu_finish(next_p, fpu);
-
-	this_cpu_write(current_task, next_p);
 
 	return prev_p;
 }
@@ -341,4 +379,3 @@ unsigned long get_wchan(struct task_struct *p)
 	} while (count++ < 16);
 	return 0;
 }
-

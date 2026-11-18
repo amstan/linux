@@ -861,9 +861,18 @@ platform:
 	case PRID_IMP_CAVIUM_CN63XX:
 	case PRID_IMP_CAVIUM_CN66XX:
 	case PRID_IMP_CAVIUM_CN68XX:
+	case PRID_IMP_CAVIUM_CNF71XX:
 		c->cputype = CPU_CAVIUM_OCTEON2;
 		__cpu_name[cpu] = "Cavium Octeon II";
 		set_elf_platform(cpu, "octeon2");
+		break;
+	case PRID_IMP_CAVIUM_CN70XX:
+	case PRID_IMP_CAVIUM_CN73XX:
+	case PRID_IMP_CAVIUM_CNF75XX:
+	case PRID_IMP_CAVIUM_CN78XX:
+		c->cputype = CPU_CAVIUM_OCTEON3;
+		__cpu_name[cpu] = "Cavium Octeon III";
+		set_elf_platform(cpu, "octeon3");
 		break;
 	default:
 		printk(KERN_INFO "Unknown Octeon chip!\n");
@@ -1063,4 +1072,38 @@ __cpuinit void cpu_report(void)
 	       c->processor_id, cpu_name_string());
 	if (c->options & MIPS_CPU_FPU)
 		printk(KERN_INFO "FPU revision is: %08x\n", c->fpu_id);
+}
+
+static DEFINE_SPINLOCK(kscratch_used_lock);
+
+static unsigned int kscratch_used_mask
+#ifdef CONFIG_KVM_MIPS_VZ
+/* KVM_MIPS_VZ implemtation uses these two statically. */
+= 0xc
+#endif
+;
+
+int allocate_kscratch(void)
+{
+	int r;
+	unsigned int a;
+
+	spin_lock(&kscratch_used_lock);
+
+	a = cpu_data[0].kscratch_mask & ~kscratch_used_mask;
+
+	r = ffs(a);
+
+	if (r == 0) {
+		r = -1;
+		goto out;
+	}
+
+	r--; /* make it zero based */
+
+	kscratch_used_mask |= (1 << r);
+out:
+	spin_unlock(&kscratch_used_lock);
+
+	return r;
 }

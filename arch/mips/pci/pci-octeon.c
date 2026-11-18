@@ -13,6 +13,7 @@
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/swiotlb.h>
+#include <linux/moduleparam.h>
 
 #include <asm/time.h>
 
@@ -22,6 +23,10 @@
 #include <asm/octeon/pci-octeon.h>
 
 #include <dma-coherence.h>
+
+/* Module parameter to disable PCI probing */
+static int pci_disable;
+module_param(pci_disable, int, S_IRUGO);
 
 #define USE_OCTEON_INTERNAL_ARBITER
 
@@ -205,8 +210,7 @@ const char *octeon_get_pci_interrupts(void)
 	 * INTD# = 3)
 	 */
 	switch (octeon_bootinfo->board_type) {
-	case CVMX_BOARD_TYPE_NAO38:
-		/* This is really the NAC38 */
+	case CVMX_BOARD_TYPE_NAC38:
 		return "AAAAADABAAAAAAAAAAAAAAAAAAAAAAAA";
 	case CVMX_BOARD_TYPE_EBH3100:
 	case CVMX_BOARD_TYPE_CN3010_EVB_HS5:
@@ -571,20 +575,16 @@ static int __init octeon_pci_setup(void)
 	union cvmx_npi_mem_access_subidx mem_access;
 	int index;
 
+	/* Disable PCI if instructed on the command line */
+	if (pci_disable)
+		return 0;
+
 	/* Only these chips have PCI */
 	if (octeon_has_feature(OCTEON_FEATURE_PCIE))
 		return 0;
 
 	/* Point pcibios_map_irq() to the PCI version of it */
 	octeon_pcibios_map_irq = octeon_pci_pcibios_map_irq;
-
-	/* Only use the big bars on chips that support it */
-	if (OCTEON_IS_MODEL(OCTEON_CN31XX) ||
-	    OCTEON_IS_MODEL(OCTEON_CN38XX_PASS2) ||
-	    OCTEON_IS_MODEL(OCTEON_CN38XX_PASS1))
-		octeon_dma_bar_type = OCTEON_DMA_BAR_TYPE_SMALL;
-	else
-		octeon_dma_bar_type = OCTEON_DMA_BAR_TYPE_BIG;
 
 	/* PCI I/O and PCI MEM values */
 	set_io_port_base(OCTEON_PCI_IOSPACE_BASE);

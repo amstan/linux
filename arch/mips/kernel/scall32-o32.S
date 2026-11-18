@@ -20,6 +20,7 @@
 #include <asm/unistd.h>
 #include <asm/war.h>
 #include <asm/asm-offsets.h>
+#include <asm/msa_calling.h>
 
 /* Highest syscall used of any syscall flavour */
 #define MAX_SYSCALL_NO	__NR_O32_Linux + __NR_O32_Linux_syscalls
@@ -32,6 +33,7 @@ NESTED(handle_sys, PT_SIZE, sp)
 	STI
 	.set	at
 
+	MSA_KERNEL
 	lw	t1, PT_EPC(sp)		# skip syscall on return
 
 	subu	v0, v0, __NR_O32_Linux	# check syscall number
@@ -513,8 +515,8 @@ einval: li	v0, -ENOSYS
 	sys	sys_tgkill		3
 	sys	sys_utimes		2
 	sys	sys_mbind		4
-	sys	sys_ni_syscall		0	/* sys_get_mempolicy */
-	sys	sys_ni_syscall		0	/* 4270 sys_set_mempolicy */
+	sys	sys_get_mempolicy	5
+	sys	sys_set_mempolicy	3	/* 4270 */
 	sys	sys_mq_open		4
 	sys	sys_mq_unlink		1
 	sys	sys_mq_timedsend	5
@@ -593,6 +595,11 @@ einval: li	v0, -ENOSYS
 	sys	sys_process_vm_writev	6
 	sys	sys_kcmp		5
 	sys	sys_finit_module	3
+#ifdef CONFIG_MICROSTATE_ACCT
+	sys	sys_msa			3
+#else
+	sys	sys_msa			2
+#endif
 	.endm
 
 	/* We pre-compute the number of _instruction_ bytes needed to

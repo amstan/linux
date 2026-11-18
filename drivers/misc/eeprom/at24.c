@@ -23,6 +23,7 @@
 #include <linux/of.h>
 #include <linux/i2c.h>
 #include <linux/i2c/at24.h>
+#include <linux/of_memory_accessor.h>
 
 /*
  * I2C EEPROMs from most vendors are inexpensive and mostly interchangeable.
@@ -85,7 +86,7 @@ struct at24_data {
  * This value is forced to be a power of two so that writes align on pages.
  */
 static unsigned io_limit = 128;
-module_param(io_limit, uint, 0);
+module_param(io_limit, uint, 0644);
 MODULE_PARM_DESC(io_limit, "Maximum bytes per I/O (default 128)");
 
 /*
@@ -93,7 +94,7 @@ MODULE_PARM_DESC(io_limit, "Maximum bytes per I/O (default 128)");
  * it's important to recover from write timeouts.
  */
 static unsigned write_timeout = 25;
-module_param(write_timeout, uint, 0);
+module_param(write_timeout, uint, 0644);
 MODULE_PARM_DESC(write_timeout, "Time (in ms) to try writes (default 25)");
 
 #define AT24_SIZE_BYTELEN 5
@@ -641,6 +642,9 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	if (chip.setup)
 		chip.setup(&at24->macc, chip.context);
 
+	if (client->dev.of_node)
+		of_memory_accessor_register(&client->dev, &at24->macc);
+
 	return 0;
 
 err_clients:
@@ -663,6 +667,9 @@ static int at24_remove(struct i2c_client *client)
 
 	at24 = i2c_get_clientdata(client);
 	sysfs_remove_bin_file(&client->dev.kobj, &at24->bin);
+
+	if (client->dev.of_node)
+		of_memory_accessor_remove(&client->dev);
 
 	for (i = 1; i < at24->num_addresses; i++)
 		i2c_unregister_device(at24->client[i]);

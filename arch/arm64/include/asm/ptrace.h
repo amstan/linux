@@ -107,7 +107,7 @@ struct pt_regs {
 
 #define arch_has_single_step()	(1)
 
-#ifdef CONFIG_COMPAT
+#ifdef CONFIG_AARCH32_EL0
 #define compat_thumb_mode(regs) \
 	(((regs)->pstate & COMPAT_PSR_T_BIT))
 #else
@@ -131,7 +131,7 @@ struct pt_regs {
 	(!((regs)->pstate & PSR_F_BIT))
 
 #define user_stack_pointer(regs) \
-	((regs)->sp)
+	(!compat_user_mode(regs) ? (regs)->sp : (regs)->compat_sp)
 
 /*
  * Are the current registers suitable for user mode? (used to maintain
@@ -163,15 +163,13 @@ static inline int valid_user_regs(struct user_pt_regs *regs)
 	return 0;
 }
 
-#define instruction_pointer(regs)	(regs)->pc
+#define instruction_pointer(regs)	((unsigned long)(regs)->pc)
 
 #ifdef CONFIG_SMP
 extern unsigned long profile_pc(struct pt_regs *regs);
 #else
 #define profile_pc(regs) instruction_pointer(regs)
 #endif
-
-extern int aarch32_break_trap(struct pt_regs *regs);
 
 #endif /* __ASSEMBLY__ */
 #endif

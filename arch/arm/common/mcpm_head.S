@@ -15,6 +15,7 @@
 
 #include <linux/linkage.h>
 #include <asm/mcpm.h>
+#include <asm/assembler.h>
 
 #include "vlock.h"
 
@@ -32,11 +33,11 @@
 1901:	adr	r0, 1902b
 	bl	printascii
 	mov	r0, r9
-	bl	printhex8
+	bl	printhex2
 	adr	r0, 1903b
 	bl	printascii
 	mov	r0, r10
-	bl	printhex8
+	bl	printhex2
 	adr	r0, 1904b
 	bl	printascii
 #endif
@@ -47,6 +48,7 @@
 
 ENTRY(mcpm_entry_point)
 
+ ARM_BE8(setend be)
  THUMB(	adr	r12, BSYM(1f)	)
  THUMB(	bx	r12		)
  THUMB(	.thumb			)
@@ -151,7 +153,7 @@ mcpm_setup_leave:
 
 	mov	r0, #INBOUND_NOT_COMING_UP
 	strb	r0, [r8, #MCPM_SYNC_CLUSTER_INBOUND]
-	dsb
+	dsb	st
 	sev
 
 	mov	r0, r11

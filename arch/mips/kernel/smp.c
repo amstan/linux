@@ -49,7 +49,7 @@
 
 volatile cpumask_t cpu_callin_map;	/* Bitmask of started secondaries */
 
-int __cpu_number_map[NR_CPUS];		/* Map physical to logical */
+int __cpu_number_map[CONFIG_MIPS_NR_CPU_NR_MAP];		/* Map physical to logical */
 EXPORT_SYMBOL(__cpu_number_map);
 
 int __cpu_logical_map[NR_CPUS];		/* Map logical to physical */
@@ -149,10 +149,20 @@ asmlinkage __cpuinit void start_secondary(void)
  */
 void __irq_entry smp_call_function_interrupt(void)
 {
+#ifdef CONFIG_MICROSTATE_ACCT
+	/*
+	 * When MSA is enabled, the caller must call irq_enter() and
+	 * irq_exit().
+	 */
+	BUG_ON(!in_irq());
+#else
 	irq_enter();
+#endif
 	generic_smp_call_function_single_interrupt();
 	generic_smp_call_function_interrupt();
+#ifndef CONFIG_MICROSTATE_ACCT
 	irq_exit();
+#endif
 }
 
 static void stop_this_cpu(void *dummy)
@@ -161,10 +171,8 @@ static void stop_this_cpu(void *dummy)
 	 * Remove this CPU:
 	 */
 	set_cpu_online(smp_processor_id(), false);
-	for (;;) {
-		if (cpu_wait)
-			(*cpu_wait)();		/* Wait if available. */
-	}
+	local_irq_disable();
+	while (1);
 }
 
 void smp_send_stop(void)

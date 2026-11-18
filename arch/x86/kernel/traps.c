@@ -68,12 +68,6 @@
 #include <asm/setup.h>
 
 asmlinkage int system_call(void);
-
-/*
- * The IDT has to be page-aligned to simplify the Pentium
- * F0 0F bug workaround.
- */
-gate_desc idt_table[NR_VECTORS] __page_aligned_data = { { { { 0, 0 } } }, };
 #endif
 
 DECLARE_BITMAP(used_vectors, NR_VECTORS);
@@ -85,9 +79,21 @@ static inline void conditional_sti(struct pt_regs *regs)
 		local_irq_enable();
 }
 
-static inline void preempt_conditional_sti(struct pt_regs *regs)
+static inline void conditional_sti_ist(struct pt_regs *regs)
 {
+#ifdef CONFIG_X86_64
+	/*
+	 * X86_64 uses a per CPU stack on the IST for certain traps
+	 * like int3. The task can not be preempted when using one
+	 * of these stacks, thus preemption must be disabled, otherwise
+	 * the stack can be corrupted if the task is scheduled out,
+	 * and another task comes in and uses this stack.
+	 *
+	 * On x86_32 the task keeps its own stack and it is OK if the
+	 * task schedules out.
+	 */
 	inc_preempt_count();
+#endif
 	if (regs->flags & X86_EFLAGS_IF)
 		local_irq_enable();
 }
@@ -98,19 +104,21 @@ static inline void conditional_cli(struct pt_regs *regs)
 		local_irq_disable();
 }
 
-static inline void preempt_conditional_cli(struct pt_regs *regs)
+static inline void conditional_cli_ist(struct pt_regs *regs)
 {
 	if (regs->flags & X86_EFLAGS_IF)
 		local_irq_disable();
+#ifdef CONFIG_X86_64
 	dec_preempt_count();
+#endif
 }
 
 static int __kprobes
-do_trap_no_signal(struct task_struct *tsk, int trapnr, char *str,
+do_trap_no_signal(struct task_struct *tsk, int trapnr, const char *str,
 		  struct pt_regs *regs,	long error_code)
 {
 #ifdef CONFIG_X86_32
-	if (regs->flags & X86_VM_MASK) {
+	if (v8086_mode(regs)) {
 		/*
 		 * Traps 0, 1, 3, 4, and 5 should be forwarded to vm86.
 		 * On nmi (interrupt 2), do_trap should not be called.
@@ -123,12 +131,24 @@ do_trap_no_signal(struct task_struct *tsk, int trapnr, char *str,
 		return -1;
 	}
 #endif
-	if (!user_mode(regs)) {
+	if (!user_mode_novm(regs)) {
 		if (!fixup_exception(regs)) {
 			tsk->thread.error_code = error_code;
 			tsk->thread.trap_nr = trapnr;
+
+#if defined(CONFIG_X86_32) && defined(CONFIG_PAX_KERNEXEC)
+			if (trapnr == 12 && ((regs->cs & 0xFFFF) == __KERNEL_CS || (regs->cs & 0xFFFF) == __KERNEXEC_KERNEL_CS))
+				str = "PAX: suspicious stack segment fault";
+#endif
+
 			die(str, regs, error_code);
 		}
+
+#ifdef CONFIG_PAX_REFCOUNT
+		if (trapnr == 4)
+			pax_report_refcount_overflow(regs);
+#endif
+
 		return 0;
 	}
 
@@ -136,7 +156,7 @@ do_trap_no_signal(struct task_struct *tsk, int trapnr, char *str,
 }
 
 static void __kprobes
-do_trap(int trapnr, int signr, char *str, struct pt_regs *regs,
+do_trap(int trapnr, int signr, const char *str, struct pt_regs *regs,
 	long error_code, siginfo_t *info)
 {
 	struct task_struct *tsk = current;
@@ -160,7 +180,7 @@ do_trap(int trapnr, int signr, char *str, struct pt_regs *regs,
 	if (show_unhandled_signals && unhandled_signal(tsk, signr) &&
 	    printk_ratelimit()) {
 		pr_info("%s[%d] trap %s ip:%lx sp:%lx error:%lx",
-			tsk->comm, tsk->pid, str,
+			tsk->comm, task_pid_nr(tsk), str,
 			regs->ip, regs->sp, error_code);
 		print_vma_addr(" in ", regs->ip);
 		pr_cont("\n");
@@ -281,7 +301,7 @@ do_general_protection(struct pt_regs *regs, long error_code)
 	conditional_sti(regs);
 
 #ifdef CONFIG_X86_32
-	if (regs->flags & X86_VM_MASK) {
+	if (v8086_mode(regs)) {
 		local_irq_enable();
 		handle_vm86_fault((struct kernel_vm86_regs *) regs, error_code);
 		goto exit;
@@ -289,17 +309,41 @@ do_general_protection(struct pt_regs *regs, long error_code)
 #endif
 
 	tsk = current;
-	if (!user_mode(regs)) {
+	if (!user_mode_novm(regs)) {
 		if (fixup_exception(regs))
 			goto exit;
 
 		tsk->thread.error_code = error_code;
 		tsk->thread.trap_nr = X86_TRAP_GP;
 		if (notify_die(DIE_GPF, "general protection fault", regs, error_code,
-			       X86_TRAP_GP, SIGSEGV) != NOTIFY_STOP)
+			       X86_TRAP_GP, SIGSEGV) != NOTIFY_STOP) {
+
+#if defined(CONFIG_X86_32) && defined(CONFIG_PAX_KERNEXEC)
+		if ((regs->cs & 0xFFFF) == __KERNEL_CS || (regs->cs & 0xFFFF) == __KERNEXEC_KERNEL_CS)
+			die("PAX: suspicious general protection fault", regs, error_code);
+		else
+#endif
+
 			die("general protection fault", regs, error_code);
+		}
 		goto exit;
 	}
+
+#if defined(CONFIG_X86_32) && defined(CONFIG_PAX_PAGEEXEC)
+	if (!(__supported_pte_mask & _PAGE_NX) && tsk->mm && (tsk->mm->pax_flags & MF_PAX_PAGEEXEC)) {
+		struct mm_struct *mm = tsk->mm;
+		unsigned long limit;
+
+		down_write(&mm->mmap_sem);
+		limit = mm->context.user_cs_limit;
+		if (limit < TASK_SIZE) {
+			track_exec_limit(mm, limit, TASK_SIZE, VM_EXEC);
+			up_write(&mm->mmap_sem);
+			return;
+		}
+		up_write(&mm->mmap_sem);
+	}
+#endif
 
 	tsk->thread.error_code = error_code;
 	tsk->thread.trap_nr = X86_TRAP_GP;
@@ -348,9 +392,9 @@ dotraplinkage void __kprobes notrace do_int3(struct pt_regs *regs, long error_co
 	 * as we may switch to the interrupt stack.
 	 */
 	debug_stack_usage_inc();
-	preempt_conditional_sti(regs);
+	conditional_sti_ist(regs);
 	do_trap(X86_TRAP_BP, SIGTRAP, "int3", regs, error_code, NULL);
-	preempt_conditional_cli(regs);
+	conditional_cli_ist(regs);
 	debug_stack_usage_dec();
 exit:
 	exception_exit(prev_state);
@@ -407,7 +451,7 @@ struct bad_iret_stack *fixup_bad_iret(struct bad_iret_stack *s)
 	/* Copy the remainder of the stack from the current stack. */
 	memmove(new_stack, s, offsetof(struct bad_iret_stack, regs.ip));
 
-	BUG_ON(!user_mode_vm(&new_stack->regs));
+	BUG_ON(!user_mode(&new_stack->regs));
 	return new_stack;
 }
 #endif
@@ -485,12 +529,12 @@ dotraplinkage void __kprobes do_debug(struct pt_regs *regs, long error_code)
 	debug_stack_usage_inc();
 
 	/* It's safe to allow irq's after DR6 has been saved */
-	preempt_conditional_sti(regs);
+	conditional_sti_ist(regs);
 
-	if (regs->flags & X86_VM_MASK) {
+	if (v8086_mode(regs)) {
 		handle_vm86_trap((struct kernel_vm86_regs *) regs, error_code,
 					X86_TRAP_DB);
-		preempt_conditional_cli(regs);
+		conditional_cli_ist(regs);
 		debug_stack_usage_dec();
 		goto exit;
 	}
@@ -502,7 +546,7 @@ dotraplinkage void __kprobes do_debug(struct pt_regs *regs, long error_code)
 	 * We already checked v86 mode above, so we can check for kernel mode
 	 * by just checking the CPL of CS.
 	 */
-	if ((dr6 & DR_STEP) && !user_mode(regs)) {
+	if ((dr6 & DR_STEP) && !user_mode_novm(regs)) {
 		tsk->thread.debugreg6 &= ~DR_STEP;
 		set_tsk_thread_flag(tsk, TIF_SINGLESTEP);
 		regs->flags &= ~X86_EFLAGS_TF;
@@ -510,7 +554,7 @@ dotraplinkage void __kprobes do_debug(struct pt_regs *regs, long error_code)
 	si_code = get_si_code(tsk->thread.debugreg6);
 	if (tsk->thread.debugreg6 & (DR_STEP | DR_TRAP_BITS) || user_icebp)
 		send_sigtrap(tsk, regs, error_code, si_code);
-	preempt_conditional_cli(regs);
+	conditional_cli_ist(regs);
 	debug_stack_usage_dec();
 
 exit:
@@ -534,7 +578,7 @@ void math_error(struct pt_regs *regs, int error_code, int trapnr)
 		return;
 	conditional_sti(regs);
 
-	if (!user_mode_vm(regs))
+	if (!user_mode(regs))
 	{
 		if (!fixup_exception(regs)) {
 			task->thread.error_code = error_code;

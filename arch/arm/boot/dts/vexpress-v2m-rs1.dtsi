@@ -56,6 +56,7 @@
 			smsc,irq-push-pull;
 			vdd33a-supply = <&v2m_fixed_3v3>;
 			vddvario-supply = <&v2m_fixed_3v3>;
+			clocks = <&v2m_refclk32khz>, <&v2m_refclk1mhz>, <&smbclk>;
 		};
 
 		usb@2,03000000 {
@@ -63,6 +64,7 @@
 			reg = <2 0x03000000 0x20000>;
 			interrupts = <16>;
 			port1-otg;
+			clocks = <&v2m_refclk32khz>, <&v2m_refclk1mhz>, <&smbclk>;
 		};
 
 		iofpga@3,00000000 {

@@ -26,12 +26,36 @@
 #include <linux/moduleloader.h>
 #include <linux/vmalloc.h>
 
+static inline void *__module_alloc(unsigned long size, pgprot_t prot)
+{
+	if (!size || PAGE_ALIGN(size) > MODULES_END - MODULES_VADDR)
+		return NULL;
+	return __vmalloc_node_range(size, 1, MODULES_VADDR, MODULES_END,
+				GFP_KERNEL, prot, -1,
+				__builtin_return_address(0));
+}
 void *module_alloc(unsigned long size)
 {
-	return __vmalloc_node_range(size, 1, MODULES_VADDR, MODULES_END,
-				    GFP_KERNEL, PAGE_KERNEL_EXEC, -1,
-				    __builtin_return_address(0));
+
+#ifdef CONFIG_PAX_KERNEXEC
+	return __module_alloc(size, PAGE_KERNEL);
+#else
+	return __module_alloc(size, PAGE_KERNEL_EXEC);
+#endif
+
 }
+
+#ifdef CONFIG_PAX_KERNEXEC
+void module_free_exec(struct module *mod, void *module_region)
+{
+	module_free(mod, module_region);
+}
+
+void *module_alloc_exec(unsigned long size)
+{
+	return __module_alloc(size, PAGE_KERNEL_EXEC);
+}
+#endif
 
 enum aarch64_reloc_op {
 	RELOC_OP_NONE,
@@ -182,19 +206,29 @@ static u32 encode_insn_immediate(enum aarch64_imm_type type, u32 insn, u64 imm)
 	return insn;
 }
 
+static u32 fetch_insn(void *place)
+{
+    return le32_to_cpu(*((u32 *) place));
+}
+
+static void save_insn(void *place, u32 value)
+{
+    *((u32 *) place) = cpu_to_le32(value);
+}
+
 static int reloc_insn_movw(enum aarch64_reloc_op op, void *place, u64 val,
 			   int lsb, enum aarch64_imm_type imm_type)
 {
 	u64 imm, limit = 0;
 	s64 sval;
-	u32 insn = *(u32 *)place;
+	u32 insn = fetch_insn(place);
 
 	sval = do_reloc(op, place, val);
 	sval >>= lsb;
 	imm = sval & 0xffff;
 
 	/* Update the instruction with the new encoding. */
-	*(u32 *)place = encode_insn_immediate(imm_type, insn, imm);
+	save_insn(place, encode_insn_immediate(imm_type, insn, imm));
 
 	/* Shift out the immediate field. */
 	sval >>= 16;
@@ -222,7 +256,7 @@ static int reloc_insn_imm(enum aarch64_reloc_op op, void *place, u64 val,
 {
 	u64 imm, imm_mask;
 	s64 sval;
-	u32 insn = *(u32 *)place;
+	u32 insn = fetch_insn(place);
 
 	/* Calculate the relocation value. */
 	sval = do_reloc(op, place, val);
@@ -233,7 +267,7 @@ static int reloc_insn_imm(enum aarch64_reloc_op op, void *place, u64 val,
 	imm = sval & imm_mask;
 
 	/* Update the instruction's immediate field. */
-	*(u32 *)place = encode_insn_immediate(imm_type, insn, imm);
+	save_insn(place, encode_insn_immediate(imm_type, insn, imm));
 
 	/*
 	 * Extract the upper value bits (including the sign bit) and

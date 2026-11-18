@@ -32,6 +32,7 @@
 #include <linux/syscalls.h>
 
 #include <asm/atomic.h>
+#include <asm/debug-monitors.h>
 #include <asm/traps.h>
 #include <asm/stacktrace.h>
 #include <asm/exception.h>
@@ -117,7 +118,8 @@ static void dump_instr(const char *lvl, struct pt_regs *regs)
 		bad = __get_user(val, &((u32 *)addr)[i]);
 
 		if (!bad)
-			p += sprintf(p, i == 0 ? "(%08x) " : "%08x ", val);
+			p += sprintf(p, i == 0 ? "(%08x) " : "%08x ",
+				     le32_to_cpu(val));
 		else {
 			p += sprintf(p, "bad PC value");
 			break;
@@ -263,10 +265,9 @@ asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 
 #ifdef CONFIG_COMPAT
 	/* check for AArch32 breakpoint instructions */
-	if (compat_user_mode(regs) && aarch32_break_trap(regs) == 0)
+	if (!aarch32_break_handler(regs))
 		return;
 #endif
-
 	if (show_unhandled_signals && unhandled_signal(current, SIGILL) &&
 	    printk_ratelimit()) {
 		pr_info("%s[%d]: undefined instruction: pc=%p\n",
@@ -286,9 +287,9 @@ long compat_arm_syscall(struct pt_regs *regs);
 
 asmlinkage long do_ni_syscall(struct pt_regs *regs)
 {
-#ifdef CONFIG_COMPAT
+#ifdef CONFIG_AARCH32_EL0
 	long ret;
-	if (is_compat_task()) {
+	if (is_a32_compat_task()) {
 		ret = compat_arm_syscall(regs);
 		if (ret != -ENOSYS)
 			return ret;
@@ -346,3 +347,50 @@ void __init trap_init(void)
 {
 	return;
 }
+
+#ifdef CONFIG_PAX_KERNEXEC
+#include <linux/percpu.h>
+
+DEFINE_PER_CPU(unsigned long , pax_set_ttbr1_to_rwx);
+
+void pax_enter_irq(void)
+{
+	if (this_cpu_read(pax_set_ttbr1_to_rwx)) {
+		unsigned long ttbr;
+		ttbr = __pa(swapper_pg_dir);
+		
+		asm(
+		"	msr	ttbr1_el1, %0			// set TTBR0\n"
+		"	isb"
+		:
+		: "r" (ttbr));
+		
+		/* flush all tlb entries */	
+		dsb();
+		asm("tlbi	vmalle1is");
+		dsb();
+		isb();
+	}
+}
+
+void pax_exit_irq(void)
+{
+	if (this_cpu_read(pax_set_ttbr1_to_rwx)) {
+		unsigned long ttbr;
+		ttbr = __pa(swapper_pg_dir_pax);
+		
+		asm(
+		"	msr	ttbr1_el1, %0			// set TTBR0\n"
+		"	isb"
+		:
+		: "r" (ttbr));
+		
+		/* flush all tlb entries */	
+		dsb();
+		asm("tlbi	vmalle1is");
+		dsb();
+		isb();
+	}
+}
+#endif
+

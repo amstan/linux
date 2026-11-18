@@ -12,7 +12,7 @@
 extern void add_device_randomness(const void *, unsigned int);
 extern void add_input_randomness(unsigned int type, unsigned int code,
 				 unsigned int value);
-extern void add_interrupt_randomness(int irq, int irq_flags);
+extern void add_interrupt_randomness(int irq, int irq_flags, __u64 ip);
 
 extern void get_random_bytes(void *buf, int nbytes);
 extern void get_random_bytes_arch(void *buf, int nbytes);
@@ -32,6 +32,11 @@ void prandom_seed(u32 seed);
 
 u32 prandom_u32_state(struct rnd_state *);
 void prandom_bytes_state(struct rnd_state *state, void *buf, int nbytes);
+
+static inline unsigned long pax_get_random_long(void)
+{
+	return prandom_u32() + (sizeof(long) > 4 ? (unsigned long)prandom_u32() << 32 : 0);
+}
 
 /*
  * Handle minimum values for seeds

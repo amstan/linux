@@ -351,7 +351,37 @@ config IRQ_TIME_ACCOUNTING
 
 	  If in doubt, say N here.
 
+config MICROSTATE_ACCT
+        bool "Microstate accounting"
+	depends on HAVE_ARCH_MICROSTATE_ACCT
+        select MICROSTATE_ACCT_TIMEPROB_WORKAROUND if SMP
+	select VIRT_CPU_ACCOUNTING
+        help
+          This option causes the kernel to keep very accurate track of
+          how long your threads spend on the runqueues, running, or asleep or
+          stopped.  It will slow down your kernel somewhat, but not much.
+          Times are reported in /proc/pid/msa and through a msa()
+          system call.
+
+	  If in doubt, say N here.
+
 endchoice
+
+config MICROSTATE_ACCT_TIMEPROB_DETECT
+        bool "Detect Microstate Accounting Time Issues"
+	depends on SMP && MICROSTATE_ACCT
+	default n
+	help
+	  Detect if you CPUs do not have their clocks aligned.  This will
+	  result in a "time goes backwards" problem.  Microstate accounting
+	  detects if this happens and automatically fixes the problem, but
+	  enable this if you want to know if it's happening.
+	  If in doubt, say N here.
+
+config MICROSTATE_ACCT_TIMEPROB_WORKAROUND
+        bool
+	depends on SMP && MICROSTATE_ACCT
+        default n
 
 config BSD_PROCESS_ACCT
 	bool "BSD Process Accounting"
@@ -577,7 +607,7 @@ config RCU_FANOUT_EXACT
 
 config RCU_FAST_NO_HZ
 	bool "Accelerate last non-dyntick-idle CPU's grace periods"
-	depends on NO_HZ_COMMON && SMP
+	depends on NO_HZ_COMMON && SMP && !PREEMPT_RT_FULL
 	default n
 	help
 	  This option permits CPUs to enter dynticks-idle state even if
@@ -604,7 +634,7 @@ config TREE_RCU_TRACE
 config RCU_BOOST
 	bool "Enable RCU priority boosting"
 	depends on RT_MUTEXES && PREEMPT_RCU
-	default n
+	default y if PREEMPT_RT_FULL
 	help
 	  This option boosts the priority of preempted RCU readers that
 	  block the current preemptible RCU grace period for too long.
@@ -756,6 +786,9 @@ config LOG_BUF_SHIFT
 # Architectures with an unreliable sched_clock() should select this:
 #
 config HAVE_UNSTABLE_SCHED_CLOCK
+	bool
+
+config GENERIC_SCHED_CLOCK
 	bool
 
 #
@@ -985,6 +1018,7 @@ config CFS_BANDWIDTH
 config RT_GROUP_SCHED
 	bool "Group scheduling for SCHED_RR/FIFO"
 	depends on CGROUP_SCHED
+	depends on !PREEMPT_RT_FULL
 	default n
 	help
 	  This feature lets you explicitly allocate real CPU bandwidth
@@ -1338,6 +1372,13 @@ config ELF_CORE
 	help
 	  Enable support for generating core dumps. Disabling saves about 4k.
 
+config LIVEDUMP
+	default y
+	bool "Enable Live Application Dump"
+	help
+	  Enable support for live application dump, i.e. the capability to
+	  drop core files from the running process without (substantial)
+	  interruption of it.
 
 config PCSPKR_PLATFORM
 	bool "Enable PC-Speaker support" if EXPERT
@@ -1524,7 +1565,7 @@ config SLUB_DEBUG
 
 config COMPAT_BRK
 	bool "Disable heap randomization"
-	default y
+	default n
 	help
 	  Randomizing heap placement makes heap exploits harder, but it
 	  also breaks ancient binaries (including anything libc5 based).
@@ -1542,6 +1583,7 @@ choice
 
 config SLAB
 	bool "SLAB"
+	depends on !PREEMPT_RT_FULL
 	help
 	  The regular slab allocator that is established and known to work
 	  well in all environments. It organizes cache hot objects in
@@ -1560,6 +1602,7 @@ config SLUB
 config SLOB
 	depends on EXPERT
 	bool "SLOB (Simple Allocator)"
+	depends on !PREEMPT_RT_FULL
 	help
 	   SLOB replaces the stock allocator with a drastically simpler
 	   allocator. SLOB is generally more space efficient but

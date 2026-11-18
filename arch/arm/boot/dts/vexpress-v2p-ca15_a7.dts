@@ -9,6 +9,8 @@
 
 /dts-v1/;
 
+/memreserve/ 0xff000000 0x01000000;
+
 / {
 	model = "V2P-CA15_CA7";
 	arm,hbi = <0x249>;
@@ -18,7 +20,9 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 
-	chosen { };
+	chosen {
+		linux,stdout-path = &v2m_serial0;
+	};
 
 	aliases {
 		serial0 = &v2m_serial0;
@@ -29,6 +33,47 @@
 		i2c1 = &v2m_i2c_pcie;
 	};
 
+	clusters {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		cluster0: cluster@0 {
+			reg = <0>;
+			cores {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				core0: core@0 {
+					reg = <0>;
+				};
+
+				core1: core@1 {
+					reg = <1>;
+				};
+
+			};
+		};
+ 
+		cluster1: cluster@1 {
+			reg = <1>;
+			cores {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				core2: core@0 {
+					reg = <0>;
+				};
+
+				core3: core@1 {
+					reg = <1>;
+				};
+
+				core4: core@2 {
+					reg = <2>;
+				};
+			};
+		};
+	};
+	
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -37,36 +82,56 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a15";
 			reg = <0>;
+			cluster = <&cluster0>;
+			core = <&core0>;
+			clock-frequency = <1000000000>;
+			cci-control-port = <&cci_control1>;
 		};
 
 		cpu1: cpu@1 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a15";
 			reg = <1>;
+			cluster = <&cluster0>;
+			core = <&core1>;
+			clock-frequency = <1000000000>;
+			cci-control-port = <&cci_control1>;
 		};
 
 		cpu2: cpu@2 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a7";
 			reg = <0x100>;
+			cluster = <&cluster1>;
+			core = <&core2>;
+			clock-frequency = <800000000>;
+			cci-control-port = <&cci_control2>;
 		};
 
 		cpu3: cpu@3 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a7";
 			reg = <0x101>;
+			cluster = <&cluster1>;
+			core = <&core3>;
+			clock-frequency = <800000000>;
+			cci-control-port = <&cci_control2>;
 		};
 
 		cpu4: cpu@4 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a7";
 			reg = <0x102>;
+			cluster = <&cluster1>;
+			core = <&core4>;
+			clock-frequency = <800000000>;
+			cci-control-port = <&cci_control2>;
 		};
 	};
 
 	memory@80000000 {
 		device_type = "memory";
-		reg = <0 0x80000000 0 0x40000000>;
+		reg = <0 0x80000000 0 0x80000000>;
 	};
 
 	wdt@2a490000 {
@@ -81,6 +146,8 @@
 		compatible = "arm,hdlcd";
 		reg = <0 0x2b000000 0 0x1000>;
 		interrupts = <0 85 4>;
+		mode = "1024x768-16@60";
+		framebuffer = <0 0xff000000 0 0x01000000>;
 		clocks = <&oscclk5>;
 		clock-names = "pxlclk";
 	};
@@ -104,6 +171,36 @@
 		interrupts = <1 9 0xf04>;
 	};
 
+	cci@2c090000 {
+		compatible = "arm,cci-400";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		reg = <0 0x2c090000 0 0x1000>;
+		ranges = <0x0 0x0 0x2c090000 0x10000>;
+
+		cci_control1: slave-if@4000 {
+			compatible = "arm,cci-400-ctrl-if";
+			interface-type = "ace";
+			reg = <0x4000 0x1000>;
+		};
+
+		cci_control2: slave-if@5000 {
+			compatible = "arm,cci-400-ctrl-if";
+			interface-type = "ace";
+			reg = <0x5000 0x1000>;
+		};
+	};
+
+	cci-pmu@2c099000 {
+		compatible = "arm,cci-400-pmu";
+		reg = <0 0x2c099000 0 0x6000>;
+		interrupts = <0 101 4>,
+			     <0 102 4>,
+			     <0 103 4>,
+			     <0 104 4>,
+			     <0 105 4>;
+	};
+
 	memory-controller@7ffd0000 {
 		compatible = "arm,pl354", "arm,primecell";
 		reg = <0 0x7ffd0000 0 0x1000>;
@@ -124,6 +221,12 @@
 		clocks = <&oscclk6a>;
 		clock-names = "apb_pclk";
 	};
+
+        scc@7fff0000 {
+		compatible = "arm,vexpress-scc,v2p-ca15_a7", "arm,vexpress-scc";
+		reg = <0 0x7fff0000 0 0x1000>;
+		interrupts = <0 95 4>;
+        };
 
 	timer {
 		compatible = "arm,armv7-timer";

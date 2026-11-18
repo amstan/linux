@@ -237,6 +237,7 @@ unsigned long get_wchan(struct task_struct *p)
 	return 0;
 }
 
+#ifndef CONFIG_PAX_ASLR
 unsigned long arch_align_stack(unsigned long sp)
 {
 	if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)
@@ -272,3 +273,4 @@ unsigned long randomize_et_dyn(unsigned long base)
 		return base;
 	return ret;
 }
+#endif

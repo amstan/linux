@@ -36,7 +36,7 @@ static int exynos_set_cpu_boot_addr(int cpu, unsigned long boot_addr)
 {
 	void __iomem *boot_reg = S5P_VA_SYSRAM_NS + 0x1c + 4*cpu;
 
-	__raw_writel(boot_addr, boot_reg);
+	writel_relaxed(boot_addr, boot_reg);
 	return 0;
 }
 
@@ -48,20 +48,18 @@ static const struct firmware_ops exynos_firmware_ops = {
 
 void __init exynos_firmware_init(void)
 {
-	if (of_have_populated_dt()) {
-		struct device_node *nd;
-		const __be32 *addr;
+	struct device_node *nd;
+	const __be32 *addr;
 
-		nd = of_find_compatible_node(NULL, NULL,
-						"samsung,secure-firmware");
-		if (!nd)
-			return;
+	nd = of_find_compatible_node(NULL, NULL,
+					"samsung,secure-firmware");
+	if (!nd)
+		return;
 
-		addr = of_get_address(nd, 0, NULL, NULL);
-		if (!addr) {
-			pr_err("%s: No address specified.\n", __func__);
-			return;
-		}
+	addr = of_get_address(nd, 0, NULL, NULL);
+	if (!addr) {
+		pr_err("%s: No address specified.\n", __func__);
+		return;
 	}
 
 	pr_info("Running under secure firmware.\n");

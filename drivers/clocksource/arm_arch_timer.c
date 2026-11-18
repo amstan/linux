@@ -17,6 +17,7 @@
 #include <linux/interrupt.h>
 #include <linux/of_irq.h>
 #include <linux/io.h>
+#include <linux/sched_clock.h>
 
 #include <asm/arch_timer.h>
 #include <asm/virt.h>
@@ -256,7 +257,7 @@ static int __cpuinit arch_timer_cpu_notify(struct notifier_block *self,
 	return NOTIFY_OK;
 }
 
-static struct notifier_block arch_timer_cpu_nb __cpuinitdata = {
+static struct notifier_block arch_timer_cpu_nb __cpuinitdata_nopax = {
 	.notifier_call = arch_timer_cpu_notify,
 };
 
@@ -280,6 +281,9 @@ static int __init arch_timer_register(void)
 	cyclecounter.shift = clocksource_counter.shift;
 	timecounter_init(&timecounter, &cyclecounter,
 			 arch_counter_get_cntvct());
+
+	/* 56 bits minimum, so we assume worst case rollover */
+	sched_clock_register(arch_timer_read_counter, 56, arch_timer_rate);
 
 	if (arch_timer_use_virtual) {
 		ppi = arch_timer_ppi[VIRT_PPI];

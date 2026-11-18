@@ -1437,6 +1437,7 @@ void notrace __ppc64_runlatch_off(void)
 }
 #endif /* CONFIG_PPC64 */
 
+#ifndef CONFIG_PAX_ASLR
 unsigned long arch_align_stack(unsigned long sp)
 {
 	if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)
@@ -1491,3 +1492,4 @@ unsigned long randomize_et_dyn(unsigned long base)
 
 	return ret;
 }
+#endif

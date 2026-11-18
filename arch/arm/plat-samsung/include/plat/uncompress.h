@@ -14,6 +14,8 @@
 #ifndef __ASM_PLAT_UNCOMPRESS_H
 #define __ASM_PLAT_UNCOMPRESS_H
 
+#include <linux/swab.h>
+
 typedef unsigned int upf_t;	/* cannot include linux/serial_core.h */
 
 /* uart setup */
@@ -28,11 +30,20 @@ static void arch_detect_cpu(void);
 /* defines for UART registers */
 
 #include <plat/regs-serial.h>
-#include <plat/regs-watchdog.h>
 
 /* working in physical space... */
-#undef S3C2410_WDOGREG
-#define S3C2410_WDOGREG(x) ((S3C24XX_PA_WATCHDOG + (x)))
+#define S3C_WDOGREG(x)	((S3C_PA_WDT + (x)))
+
+#define S3C2410_WTCON	S3C_WDOGREG(0x00)
+#define S3C2410_WTDAT	S3C_WDOGREG(0x04)
+#define S3C2410_WTCNT	S3C_WDOGREG(0x08)
+
+#define S3C2410_WTCON_RSTEN	(1 << 0)
+#define S3C2410_WTCON_ENABLE	(1 << 5)
+
+#define S3C2410_WTCON_DIV128	(3 << 3)
+
+#define S3C2410_WTCON_PRESCALE(x)	((x) << 8)
 
 /* how many bytes we allow into the FIFO at a time in FIFO mode */
 #define FIFO_MAX	 (14)
@@ -47,6 +58,9 @@ uart_wr(unsigned int reg, unsigned int val)
 	volatile unsigned int *ptr;
 
 	ptr = (volatile unsigned int *)(reg + uart_base);
+#ifdef CONFIG_CPU_BIG_ENDIAN
+	val = __swab32(val);
+#endif /* CONFIG_CPU_BIG_ENDIAN */
 	*ptr = val;
 }
 
@@ -56,7 +70,11 @@ uart_rd(unsigned int reg)
 	volatile unsigned int *ptr;
 
 	ptr = (volatile unsigned int *)(reg + uart_base);
+#ifdef CONFIG_CPU_BIG_ENDIAN
+	return __swab32(*ptr);
+#else
 	return *ptr;
+#endif /* CONFIG_CPU_BIG_ENDIAN */
 }
 
 /* we can deal with the case the UARTs are being run
@@ -95,10 +113,17 @@ static inline void flush(void)
 {
 }
 
+#ifdef CONFIG_CPU_BIG_ENDIAN
+#define __raw_writel(d, ad)			\
+	do {							\
+		*((volatile unsigned int __force *)(ad)) = __swab32(d); \
+	} while (0)
+#else
 #define __raw_writel(d, ad)			\
 	do {							\
 		*((volatile unsigned int __force *)(ad)) = (d); \
 	} while (0)
+#endif /* CONFIG_CPU_BIG_ENDIAN */
 
 #ifdef CONFIG_S3C_BOOT_ERROR_RESET
 

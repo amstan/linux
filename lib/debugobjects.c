@@ -286,7 +286,7 @@ static void debug_object_is_on_stack(void *addr, int onstack)
 	if (limit > 4)
 		return;
 
-	is_on_stack = object_is_on_stack(addr);
+	is_on_stack = object_starts_on_stack(addr);
 	if (is_on_stack == onstack)
 		return;
 
@@ -308,7 +308,10 @@ __debug_object_init(void *addr, struct debug_obj_descr *descr, int onstack)
 	struct debug_obj *obj;
 	unsigned long flags;
 
-	fill_pool();
+#ifdef CONFIG_PREEMPT_RT_FULL
+	if (preempt_count() == 0 && !irqs_disabled())
+#endif
+		fill_pool();
 
 	db = get_bucket((unsigned long) addr);
 

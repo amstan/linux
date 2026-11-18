@@ -21,10 +21,16 @@
 #include <linux/proc_fs.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
+#include <linux/locallock.h>
 #include <net/net_namespace.h>
 #include <net/sock.h>
 
 #include "nf_internals.h"
+
+#ifdef CONFIG_PREEMPT_RT_BASE
+DEFINE_LOCAL_IRQ_LOCK(xt_write_lock);
+EXPORT_PER_CPU_SYMBOL(xt_write_lock);
+#endif
 
 static DEFINE_MUTEX(afinfo_mutex);
 
@@ -191,9 +197,11 @@ next_hook:
 		ret = NF_DROP_GETERR(verdict);
 		if (ret == 0)
 			ret = -EPERM;
-	} else if ((verdict & NF_VERDICT_MASK) == NF_QUEUE) {
+	} else if ((verdict & NF_VERDICT_MASK) == NF_QUEUE ||
+		   (verdict & NF_VERDICT_MASK) == NF_IMQ_QUEUE) {
 		int err = nf_queue(skb, elem, pf, hook, indev, outdev, okfn,
-						verdict >> NF_VERDICT_QBITS);
+						verdict >> NF_VERDICT_QBITS,
+						verdict & NF_VERDICT_MASK);
 		if (err < 0) {
 			if (err == -ECANCELED)
 				goto next_hook;

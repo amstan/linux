@@ -122,6 +122,7 @@ config X86
 	select COMPAT_OLD_SIGACTION if IA32_EMULATION
 	select RTC_LIB
 	select ARCH_SUPPORTS_ATOMIC_RMW
+	select HAVE_PREEMPT_LAZY
 
 config INSTRUCTION_DECODER
 	def_bool y
@@ -178,8 +179,11 @@ config ARCH_MAY_HAVE_PC_FDC
 	def_bool y
 	depends on ISA_DMA_API
 
+config RWSEM_GENERIC_SPINLOCK
+	def_bool PREEMPT_RT_FULL
+
 config RWSEM_XCHGADD_ALGORITHM
-	def_bool y
+	def_bool !RWSEM_GENERIC_SPINLOCK && !PREEMPT_RT_FULL
 
 config GENERIC_CALIBRATE_DELAY
 	def_bool y
@@ -206,6 +210,12 @@ config ARCH_HIBERNATION_POSSIBLE
 	def_bool y
 
 config ARCH_SUSPEND_POSSIBLE
+	def_bool y
+
+config ARCH_WANT_HUGE_PMD_SHARE
+	def_bool y
+
+config ARCH_WANT_GENERAL_HUGETLB
 	def_bool y
 
 config ZONE_DMA32
@@ -240,7 +250,7 @@ config X86_HT
 
 config X86_32_LAZY_GS
 	def_bool y
-	depends on X86_32 && !CC_STACKPROTECTOR
+	depends on X86_32 && !CC_STACKPROTECTOR && !PAX_MEMORY_UDEREF
 
 config ARCH_HWEIGHT_CFLAGS
 	string
@@ -461,7 +471,7 @@ config X86_MDFLD
 	select MFD_INTEL_MSIC
 	---help---
 	  Medfield is Intel's Low Power Intel Architecture (LPIA) based Moblin
-	  Internet Device(MID) platform. 
+	  Internet Device(MID) platform.
 	  Unlike standard x86 PCs, Medfield does not have many legacy devices
 	  nor standard legacy replacement devices/features. e.g. Medfield does
 	  not contain i8259, i8254, HPET, legacy BIOS, most of the io ports.
@@ -797,7 +807,7 @@ config IOMMU_HELPER
 config MAXSMP
 	bool "Enable Maximum number of SMP Processors and NUMA Nodes"
 	depends on X86_64 && SMP && DEBUG_KERNEL
-	select CPUMASK_OFFSTACK
+	select CPUMASK_OFFSTACK if !PREEMPT_RT_FULL
 	---help---
 	  Enable maximum number of CPUS and NUMA Nodes for this architecture.
 	  If unsure, say N.
@@ -1204,7 +1214,7 @@ config PAGE_OFFSET
 	hex
 	default 0xB0000000 if VMSPLIT_3G_OPT
 	default 0x80000000 if VMSPLIT_2G
-	default 0x78000000 if VMSPLIT_2G_OPT
+	default 0x70000000 if VMSPLIT_2G_OPT
 	default 0x40000000 if VMSPLIT_1G
 	default 0xC0000000
 	depends on X86_32
@@ -1603,6 +1613,7 @@ config SECCOMP
 
 config CC_STACKPROTECTOR
 	bool "Enable -fstack-protector buffer overflow detection"
+	depends on X86_64 || !PAX_MEMORY_UDEREF
 	---help---
 	  This option turns on the -fstack-protector GCC feature. This
 	  feature puts, at the beginning of functions, a canary value on
@@ -1722,6 +1733,8 @@ config X86_NEED_RELOCS
 config PHYSICAL_ALIGN
 	hex "Alignment value to which kernel should be aligned" if X86_32
 	default "0x1000000"
+	range 0x200000 0x1000000 if PAX_KERNEXEC && X86_PAE
+	range 0x400000 0x1000000 if PAX_KERNEXEC && !X86_PAE
 	range 0x2000 0x1000000
 	---help---
 	  This value puts the alignment restrictions on physical address
@@ -1797,9 +1810,10 @@ config DEBUG_HOTPLUG_CPU0
 	  If unsure, say N.
 
 config COMPAT_VDSO
-	def_bool y
+	def_bool n
 	prompt "Compat VDSO support"
 	depends on X86_32 || IA32_EMULATION
+	depends on !PAX_PAGEEXEC && !PAX_SEGMEXEC && !PAX_KERNEXEC && !PAX_MEMORY_UDEREF
 	---help---
 	  Map the 32-bit VDSO to the predictable old-style address too.
 

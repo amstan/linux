@@ -36,22 +36,6 @@ void (*pm_power_off)(void);
 EXPORT_SYMBOL(pm_power_off);
 
 static const struct desc_ptr no_idt = {};
-static int reboot_mode;
-enum reboot_type reboot_type = BOOT_ACPI;
-int reboot_force;
-
-/*
- * This variable is used privately to keep track of whether or not
- * reboot_type is still set to its default value (i.e., reboot= hasn't
- * been set on the command line).  This is needed so that we can
- * suppress DMI scanning for reboot quirks.  Without it, it's
- * impossible to override a faulty reboot quirk without recompiling.
- */
-static int reboot_default = 1;
-
-#ifdef CONFIG_SMP
-static int reboot_cpu = -1;
-#endif
 
 /*
  * This is set if we need to go through the 'emergency' path.
@@ -62,79 +46,6 @@ static int reboot_emergency;
 
 /* This is set by the PCI code if either type 1 or type 2 PCI is detected */
 bool port_cf9_safe = false;
-
-/*
- * reboot=b[ios] | s[mp] | t[riple] | k[bd] | e[fi] [, [w]arm | [c]old] | p[ci]
- * warm   Don't set the cold reboot flag
- * cold   Set the cold reboot flag
- * bios   Reboot by jumping through the BIOS
- * smp    Reboot by executing reset on BSP or other CPU
- * triple Force a triple fault (init)
- * kbd    Use the keyboard controller. cold reset (default)
- * acpi   Use the RESET_REG in the FADT
- * efi    Use efi reset_system runtime service
- * pci    Use the so-called "PCI reset register", CF9
- * force  Avoid anything that could hang.
- */
-static int __init reboot_setup(char *str)
-{
-	for (;;) {
-		/*
-		 * Having anything passed on the command line via
-		 * reboot= will cause us to disable DMI checking
-		 * below.
-		 */
-		reboot_default = 0;
-
-		switch (*str) {
-		case 'w':
-			reboot_mode = 0x1234;
-			break;
-
-		case 'c':
-			reboot_mode = 0;
-			break;
-
-#ifdef CONFIG_SMP
-		case 's':
-			if (isdigit(*(str+1))) {
-				reboot_cpu = (int) (*(str+1) - '0');
-				if (isdigit(*(str+2)))
-					reboot_cpu = reboot_cpu*10 + (int)(*(str+2) - '0');
-			}
-			/*
-			 * We will leave sorting out the final value
-			 * when we are ready to reboot, since we might not
-			 * have detected BSP APIC ID or smp_num_cpu
-			 */
-			break;
-#endif /* CONFIG_SMP */
-
-		case 'b':
-		case 'a':
-		case 'k':
-		case 't':
-		case 'e':
-		case 'p':
-			reboot_type = *str;
-			break;
-
-		case 'f':
-			reboot_force = 1;
-			break;
-		}
-
-		str = strchr(str, ',');
-		if (str)
-			str++;
-		else
-			break;
-	}
-	return 1;
-}
-
-__setup("reboot=", reboot_setup);
-
 
 /*
  * Reboot options and system auto-detection code provided by
@@ -157,6 +68,11 @@ static int __init set_bios_reboot(const struct dmi_system_id *d)
 
 void __noreturn machine_real_restart(unsigned int type)
 {
+
+#if defined(CONFIG_X86_32) && (defined(CONFIG_PAX_KERNEXEC) || defined(CONFIG_PAX_MEMORY_UDEREF))
+	struct desc_struct *gdt;
+#endif
+
 	local_irq_disable();
 
 	/*
@@ -184,7 +100,29 @@ void __noreturn machine_real_restart(unsigned int type)
 
 	/* Jump to the identity-mapped low memory code */
 #ifdef CONFIG_X86_32
-	asm volatile("jmpl *%0" : :
+
+#if defined(CONFIG_PAX_KERNEXEC) || defined(CONFIG_PAX_MEMORY_UDEREF)
+	gdt = get_cpu_gdt_table(smp_processor_id());
+	pax_open_kernel();
+#ifdef CONFIG_PAX_MEMORY_UDEREF
+	gdt[GDT_ENTRY_KERNEL_DS].type = 3;
+	gdt[GDT_ENTRY_KERNEL_DS].limit = 0xf;
+	loadsegment(ds, __KERNEL_DS);
+	loadsegment(es, __KERNEL_DS);
+	loadsegment(ss, __KERNEL_DS);
+#endif
+#ifdef CONFIG_PAX_KERNEXEC
+	gdt[GDT_ENTRY_KERNEL_CS].base0 = 0;
+	gdt[GDT_ENTRY_KERNEL_CS].base1 = 0;
+	gdt[GDT_ENTRY_KERNEL_CS].base2 = 0;
+	gdt[GDT_ENTRY_KERNEL_CS].limit0 = 0xffff;
+	gdt[GDT_ENTRY_KERNEL_CS].limit = 0xf;
+	gdt[GDT_ENTRY_KERNEL_CS].g = 1;
+#endif
+	pax_close_kernel();
+#endif
+
+	asm volatile("ljmpl *%0" : :
 		     "rm" (real_mode_header->machine_real_restart_asm),
 		     "a" (type));
 #else
@@ -547,11 +485,12 @@ void __attribute__((weak)) mach_reboot_fixups(void)
  * try to force a triple fault and then cycle between hitting the keyboard
  * controller and doing that
  */
-static void native_machine_emergency_restart(void)
+static void __noreturn native_machine_emergency_restart(void)
 {
 	int i;
 	int attempt = 0;
 	int orig_reboot_type = reboot_type;
+	unsigned short mode;
 
 	if (reboot_emergency)
 		emergency_vmx_disable_all();
@@ -559,7 +498,8 @@ static void native_machine_emergency_restart(void)
 	tboot_shutdown(TB_SHUTDOWN_REBOOT);
 
 	/* Tell the BIOS if we want cold or warm reboot */
-	*((unsigned short *)__va(0x472)) = reboot_mode;
+	mode = reboot_mode == REBOOT_WARM ? 0x1234 : 0;
+	*((unsigned short *)__va(0x472)) = mode;
 
 	for (;;) {
 		/* Could also try the reset bit in the Hammer NB */
@@ -601,7 +541,7 @@ static void native_machine_emergency_restart(void)
 
 		case BOOT_EFI:
 			if (efi_enabled(EFI_RUNTIME_SERVICES))
-				efi.reset_system(reboot_mode ?
+				efi.reset_system(reboot_mode == REBOOT_WARM ?
 						 EFI_RESET_WARM :
 						 EFI_RESET_COLD,
 						 EFI_SUCCESS, 0, NULL);
@@ -630,26 +570,10 @@ void native_machine_shutdown(void)
 {
 	/* Stop the cpus and apics */
 #ifdef CONFIG_SMP
-
-	/* The boot cpu is always logical cpu 0 */
-	int reboot_cpu_id = 0;
-
-	/* See if there has been given a command line override */
-	if ((reboot_cpu != -1) && (reboot_cpu < nr_cpu_ids) &&
-		cpu_online(reboot_cpu))
-		reboot_cpu_id = reboot_cpu;
-
-	/* Make certain the cpu I'm about to reboot on is online */
-	if (!cpu_online(reboot_cpu_id))
-		reboot_cpu_id = smp_processor_id();
-
-	/* Make certain I only run on the appropriate processor */
-	set_cpus_allowed_ptr(current, cpumask_of(reboot_cpu_id));
-
 	/*
-	 * O.K Now that I'm on the appropriate processor, stop all of the
-	 * others. Also disable the local irq to not receive the per-cpu
-	 * timer interrupt which may trigger scheduler's load balance.
+	 * Stop all of the others. Also disable the local irq to
+	 * not receive the per-cpu timer interrupt which may trigger
+	 * scheduler's load balance.
 	 */
 	local_irq_disable();
 	stop_other_cpus();
@@ -670,13 +594,13 @@ void native_machine_shutdown(void)
 #endif
 }
 
-static void __machine_emergency_restart(int emergency)
+static void __noreturn __machine_emergency_restart(int emergency)
 {
 	reboot_emergency = emergency;
 	machine_ops.emergency_restart();
 }
 
-static void native_machine_restart(char *__unused)
+static void __noreturn native_machine_restart(char *__unused)
 {
 	pr_notice("machine restart\n");
 
@@ -685,7 +609,7 @@ static void native_machine_restart(char *__unused)
 	__machine_emergency_restart(0);
 }
 
-static void native_machine_halt(void)
+static void __noreturn native_machine_halt(void)
 {
 	/* Stop other cpus and apics */
 	machine_shutdown();
@@ -695,7 +619,7 @@ static void native_machine_halt(void)
 	stop_this_cpu(NULL);
 }
 
-static void native_machine_power_off(void)
+static void __noreturn native_machine_power_off(void)
 {
 	if (pm_power_off) {
 		if (!reboot_force)
@@ -704,9 +628,10 @@ static void native_machine_power_off(void)
 	}
 	/* A fallback in case there is no PM info available */
 	tboot_shutdown(TB_SHUTDOWN_HALT);
+	unreachable();
 }
 
-struct machine_ops machine_ops = {
+struct machine_ops machine_ops __read_only = {
 	.power_off = native_machine_power_off,
 	.shutdown = native_machine_shutdown,
 	.emergency_restart = native_machine_emergency_restart,

@@ -28,6 +28,8 @@
 #include <asm/r4kcache.h>
 #define CONFIG_MIPS_MT
 
+#include <asm/kvm_mips_te.h>
+
 #include "kvm_mips_opcode.h"
 #include "kvm_mips_int.h"
 #include "kvm_mips_comm.h"
@@ -213,17 +215,17 @@ enum emulation_result update_pc(struct kvm_vcpu *vcpu, uint32_t cause)
 	enum emulation_result er = EMULATE_DONE;
 
 	if (cause & CAUSEF_BD) {
-		branch_pc = kvm_compute_return_epc(vcpu, vcpu->arch.pc);
+		branch_pc = kvm_compute_return_epc(vcpu, vcpu->arch.epc);
 		if (branch_pc == KVM_INVALID_INST) {
 			er = EMULATE_FAIL;
 		} else {
-			vcpu->arch.pc = branch_pc;
-			kvm_debug("BD update_pc(): New PC: %#lx\n", vcpu->arch.pc);
+			vcpu->arch.epc = branch_pc;
+			kvm_debug("BD update_pc(): New PC: %#lx\n", vcpu->arch.epc);
 		}
 	} else
-		vcpu->arch.pc += 4;
+		vcpu->arch.epc += 4;
 
-	kvm_debug("update_pc(): New PC: %#lx\n", vcpu->arch.pc);
+	kvm_debug("update_pc(): New PC: %#lx\n", vcpu->arch.epc);
 
 	return er;
 }
@@ -234,16 +236,17 @@ enum emulation_result update_pc(struct kvm_vcpu *vcpu, uint32_t cause)
  */
 enum emulation_result kvm_mips_emulate_count(struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	enum emulation_result er = EMULATE_DONE;
 
 	/* If COUNT is enabled */
 	if (!(kvm_read_c0_guest_cause(cop0) & CAUSEF_DC)) {
-		hrtimer_try_to_cancel(&vcpu->arch.comparecount_timer);
-		hrtimer_start(&vcpu->arch.comparecount_timer,
+		hrtimer_try_to_cancel(&vcpu_te->comparecount_timer);
+		hrtimer_start(&vcpu_te->comparecount_timer,
 			      ktime_set(0, MS_TO_NS(10)), HRTIMER_MODE_REL);
 	} else {
-		hrtimer_try_to_cancel(&vcpu->arch.comparecount_timer);
+		hrtimer_try_to_cancel(&vcpu_te->comparecount_timer);
 	}
 
 	return er;
@@ -251,21 +254,22 @@ enum emulation_result kvm_mips_emulate_count(struct kvm_vcpu *vcpu)
 
 enum emulation_result kvm_mips_emul_eret(struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	enum emulation_result er = EMULATE_DONE;
 
 	if (kvm_read_c0_guest_status(cop0) & ST0_EXL) {
-		kvm_debug("[%#lx] ERET to %#lx\n", vcpu->arch.pc,
+		kvm_debug("[%#lx] ERET to %#lx\n", vcpu->arch.epc,
 			  kvm_read_c0_guest_epc(cop0));
 		kvm_clear_c0_guest_status(cop0, ST0_EXL);
-		vcpu->arch.pc = kvm_read_c0_guest_epc(cop0);
+		vcpu->arch.epc = kvm_read_c0_guest_epc(cop0);
 
 	} else if (kvm_read_c0_guest_status(cop0) & ST0_ERL) {
 		kvm_clear_c0_guest_status(cop0, ST0_ERL);
-		vcpu->arch.pc = kvm_read_c0_guest_errorepc(cop0);
+		vcpu->arch.epc = kvm_read_c0_guest_errorepc(cop0);
 	} else {
 		printk("[%#lx] ERET when MIPS_SR_EXL|MIPS_SR_ERL == 0\n",
-		       vcpu->arch.pc);
+		       vcpu->arch.epc);
 		er = EMULATE_FAIL;
 	}
 
@@ -274,15 +278,16 @@ enum emulation_result kvm_mips_emul_eret(struct kvm_vcpu *vcpu)
 
 enum emulation_result kvm_mips_emul_wait(struct kvm_vcpu *vcpu)
 {
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
 	enum emulation_result er = EMULATE_DONE;
 
-	kvm_debug("[%#lx] !!!WAIT!!! (%#lx)\n", vcpu->arch.pc,
-		  vcpu->arch.pending_exceptions);
+	kvm_debug("[%#lx] !!!WAIT!!! (%#lx)\n", vcpu->arch.epc,
+		  vcpu_te->pending_exceptions);
 
 	++vcpu->stat.wait_exits;
 	trace_kvm_exit(vcpu, WAIT_EXITS);
-	if (!vcpu->arch.pending_exceptions) {
-		vcpu->arch.wait = 1;
+	if (!vcpu_te->pending_exceptions) {
+		vcpu_te->wait = 1;
 		kvm_vcpu_block(vcpu);
 
 		/* We we are runnable, then definitely go off to user space to check if any
@@ -302,9 +307,10 @@ enum emulation_result kvm_mips_emul_wait(struct kvm_vcpu *vcpu)
  */
 enum emulation_result kvm_mips_emul_tlbr(struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	enum emulation_result er = EMULATE_FAIL;
-	uint32_t pc = vcpu->arch.pc;
+	uint32_t pc = vcpu->arch.epc;
 
 	printk("[%#x] COP0_TLBR [%ld]\n", pc, kvm_read_c0_guest_index(cop0));
 	return er;
@@ -313,11 +319,12 @@ enum emulation_result kvm_mips_emul_tlbr(struct kvm_vcpu *vcpu)
 /* Write Guest TLB Entry @ Index */
 enum emulation_result kvm_mips_emul_tlbwi(struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	int index = kvm_read_c0_guest_index(cop0);
 	enum emulation_result er = EMULATE_DONE;
 	struct kvm_mips_tlb *tlb = NULL;
-	uint32_t pc = vcpu->arch.pc;
+	uint32_t pc = vcpu->arch.epc;
 
 	if (index < 0 || index >= KVM_MIPS_GUEST_TLB_SIZE) {
 		printk("%s: illegal index: %d\n", __func__, index);
@@ -330,7 +337,7 @@ enum emulation_result kvm_mips_emul_tlbwi(struct kvm_vcpu *vcpu)
 		index = (index & ~0x80000000) % KVM_MIPS_GUEST_TLB_SIZE;
 	}
 
-	tlb = &vcpu->arch.guest_tlb[index];
+	tlb = &vcpu_te->guest_tlb[index];
 #if 1
 	/* Probe the shadow host TLB for the entry being overwritten, if one matches, invalidate it */
 	kvm_mips_host_tlb_inv(vcpu, tlb->tlb_hi);
@@ -353,10 +360,11 @@ enum emulation_result kvm_mips_emul_tlbwi(struct kvm_vcpu *vcpu)
 /* Write Guest TLB Entry @ Random Index */
 enum emulation_result kvm_mips_emul_tlbwr(struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	enum emulation_result er = EMULATE_DONE;
 	struct kvm_mips_tlb *tlb = NULL;
-	uint32_t pc = vcpu->arch.pc;
+	uint32_t pc = vcpu->arch.epc;
 	int index;
 
 #if 1
@@ -371,7 +379,7 @@ enum emulation_result kvm_mips_emul_tlbwr(struct kvm_vcpu *vcpu)
 		return EMULATE_FAIL;
 	}
 
-	tlb = &vcpu->arch.guest_tlb[index];
+	tlb = &vcpu_te->guest_tlb[index];
 
 #if 1
 	/* Probe the shadow host TLB for the entry being overwritten, if one matches, invalidate it */
@@ -394,10 +402,11 @@ enum emulation_result kvm_mips_emul_tlbwr(struct kvm_vcpu *vcpu)
 
 enum emulation_result kvm_mips_emul_tlbp(struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	long entryhi = kvm_read_c0_guest_entryhi(cop0);
 	enum emulation_result er = EMULATE_DONE;
-	uint32_t pc = vcpu->arch.pc;
+	uint32_t pc = vcpu->arch.epc;
 	int index = -1;
 
 	index = kvm_mips_guest_tlb_lookup(vcpu, entryhi);
@@ -414,17 +423,18 @@ enum emulation_result
 kvm_mips_emulate_CP0(uint32_t inst, uint32_t *opc, uint32_t cause,
 		     struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	enum emulation_result er = EMULATE_DONE;
 	int32_t rt, rd, copz, sel, co_bit, op;
-	uint32_t pc = vcpu->arch.pc;
+	uint32_t pc = vcpu->arch.epc;
 	unsigned long curr_pc;
 
 	/*
 	 * Update PC and hold onto current PC in case there is
 	 * an error and we want to rollback the PC
 	 */
-	curr_pc = vcpu->arch.pc;
+	curr_pc = vcpu->arch.epc;
 	er = update_pc(vcpu, cause);
 	if (er == EMULATE_FAIL) {
 		return er;
@@ -585,7 +595,7 @@ kvm_mips_emulate_CP0(uint32_t inst, uint32_t *opc, uint32_t cause,
 		case dmtc_op:
 			printk
 			    ("!!!!!!![%#lx]dmtc_op: rt: %d, rd: %d, sel: %d!!!!!!\n",
-			     vcpu->arch.pc, rt, rd, sel);
+			     vcpu->arch.epc, rt, rd, sel);
 			er = EMULATE_FAIL;
 			break;
 
@@ -600,11 +610,11 @@ kvm_mips_emulate_CP0(uint32_t inst, uint32_t *opc, uint32_t cause,
 			/* EI */
 			if (inst & 0x20) {
 				kvm_debug("[%#lx] mfmcz_op: EI\n",
-					  vcpu->arch.pc);
+					  vcpu->arch.epc);
 				kvm_set_c0_guest_status(cop0, ST0_IE);
 			} else {
 				kvm_debug("[%#lx] mfmcz_op: DI\n",
-					  vcpu->arch.pc);
+					  vcpu->arch.epc);
 				kvm_clear_c0_guest_status(cop0, ST0_IE);
 			}
 
@@ -629,7 +639,7 @@ kvm_mips_emulate_CP0(uint32_t inst, uint32_t *opc, uint32_t cause,
 		default:
 			printk
 			    ("[%#lx]MachEmulateCP0: unsupported COP0, copz: 0x%x\n",
-			     vcpu->arch.pc, copz);
+			     vcpu->arch.epc, copz);
 			er = EMULATE_FAIL;
 			break;
 		}
@@ -640,7 +650,7 @@ done:
 	 * Rollback PC only if emulation was unsuccessful
 	 */
 	if (er == EMULATE_FAIL) {
-		vcpu->arch.pc = curr_pc;
+		vcpu->arch.epc = curr_pc;
 	}
 
 dont_update_pc:
@@ -657,6 +667,7 @@ enum emulation_result
 kvm_mips_emulate_store(uint32_t inst, uint32_t cause,
 		       struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
 	enum emulation_result er = EMULATE_DO_MMIO;
 	int32_t op, base, rt, offset;
 	uint32_t bytes;
@@ -667,7 +678,7 @@ kvm_mips_emulate_store(uint32_t inst, uint32_t cause,
 	 * Update PC and hold onto current PC in case there is
 	 * an error and we want to rollback the PC
 	 */
-	curr_pc = vcpu->arch.pc;
+	curr_pc = vcpu->arch.epc;
 	er = update_pc(vcpu, cause);
 	if (er == EMULATE_FAIL)
 		return er;
@@ -685,8 +696,7 @@ kvm_mips_emulate_store(uint32_t inst, uint32_t cause,
 			       run->mmio.len);
 		}
 		run->mmio.phys_addr =
-		    kvm_mips_callbacks->gva_to_gpa(vcpu->arch.
-						   host_cp0_badvaddr);
+		    kvm_mips_callbacks->gva_to_gpa(vcpu_te->host_cp0_badvaddr);
 		if (run->mmio.phys_addr == KVM_INVALID_ADDR) {
 			er = EMULATE_FAIL;
 			break;
@@ -697,7 +707,7 @@ kvm_mips_emulate_store(uint32_t inst, uint32_t cause,
 		vcpu->mmio_is_write = 1;
 		*(u8 *) data = vcpu->arch.gprs[rt];
 		kvm_debug("OP_SB: eaddr: %#lx, gpr: %#lx, data: %#x\n",
-			  vcpu->arch.host_cp0_badvaddr, vcpu->arch.gprs[rt],
+			  vcpu_te->host_cp0_badvaddr, vcpu->arch.gprs[rt],
 			  *(uint8_t *) data);
 
 		break;
@@ -709,8 +719,7 @@ kvm_mips_emulate_store(uint32_t inst, uint32_t cause,
 			       run->mmio.len);
 		}
 		run->mmio.phys_addr =
-		    kvm_mips_callbacks->gva_to_gpa(vcpu->arch.
-						   host_cp0_badvaddr);
+		    kvm_mips_callbacks->gva_to_gpa(vcpu_te->host_cp0_badvaddr);
 		if (run->mmio.phys_addr == KVM_INVALID_ADDR) {
 			er = EMULATE_FAIL;
 			break;
@@ -723,7 +732,7 @@ kvm_mips_emulate_store(uint32_t inst, uint32_t cause,
 		*(uint32_t *) data = vcpu->arch.gprs[rt];
 
 		kvm_debug("[%#lx] OP_SW: eaddr: %#lx, gpr: %#lx, data: %#x\n",
-			  vcpu->arch.pc, vcpu->arch.host_cp0_badvaddr,
+			  vcpu->arch.epc, vcpu_te->host_cp0_badvaddr,
 			  vcpu->arch.gprs[rt], *(uint32_t *) data);
 		break;
 
@@ -734,8 +743,7 @@ kvm_mips_emulate_store(uint32_t inst, uint32_t cause,
 			       run->mmio.len);
 		}
 		run->mmio.phys_addr =
-		    kvm_mips_callbacks->gva_to_gpa(vcpu->arch.
-						   host_cp0_badvaddr);
+		    kvm_mips_callbacks->gva_to_gpa(vcpu_te->host_cp0_badvaddr);
 		if (run->mmio.phys_addr == KVM_INVALID_ADDR) {
 			er = EMULATE_FAIL;
 			break;
@@ -748,7 +756,7 @@ kvm_mips_emulate_store(uint32_t inst, uint32_t cause,
 		*(uint16_t *) data = vcpu->arch.gprs[rt];
 
 		kvm_debug("[%#lx] OP_SH: eaddr: %#lx, gpr: %#lx, data: %#x\n",
-			  vcpu->arch.pc, vcpu->arch.host_cp0_badvaddr,
+			  vcpu->arch.epc, vcpu_te->host_cp0_badvaddr,
 			  vcpu->arch.gprs[rt], *(uint32_t *) data);
 		break;
 
@@ -762,7 +770,7 @@ kvm_mips_emulate_store(uint32_t inst, uint32_t cause,
 	 * Rollback PC if emulation was unsuccessful
 	 */
 	if (er == EMULATE_FAIL) {
-		vcpu->arch.pc = curr_pc;
+		vcpu->arch.epc = curr_pc;
 	}
 
 	return er;
@@ -772,6 +780,7 @@ enum emulation_result
 kvm_mips_emulate_load(uint32_t inst, uint32_t cause,
 		      struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
 	enum emulation_result er = EMULATE_DO_MMIO;
 	int32_t op, base, rt, offset;
 	uint32_t bytes;
@@ -781,8 +790,8 @@ kvm_mips_emulate_load(uint32_t inst, uint32_t cause,
 	offset = inst & 0xffff;
 	op = (inst >> 26) & 0x3f;
 
-	vcpu->arch.pending_load_cause = cause;
-	vcpu->arch.io_gpr = rt;
+	vcpu_te->pending_load_cause = cause;
+	vcpu_te->io_gpr = rt;
 
 	switch (op) {
 	case lw_op:
@@ -794,8 +803,7 @@ kvm_mips_emulate_load(uint32_t inst, uint32_t cause,
 			break;
 		}
 		run->mmio.phys_addr =
-		    kvm_mips_callbacks->gva_to_gpa(vcpu->arch.
-						   host_cp0_badvaddr);
+		    kvm_mips_callbacks->gva_to_gpa(vcpu_te->host_cp0_badvaddr);
 		if (run->mmio.phys_addr == KVM_INVALID_ADDR) {
 			er = EMULATE_FAIL;
 			break;
@@ -817,8 +825,7 @@ kvm_mips_emulate_load(uint32_t inst, uint32_t cause,
 			break;
 		}
 		run->mmio.phys_addr =
-		    kvm_mips_callbacks->gva_to_gpa(vcpu->arch.
-						   host_cp0_badvaddr);
+		    kvm_mips_callbacks->gva_to_gpa(vcpu_te->host_cp0_badvaddr);
 		if (run->mmio.phys_addr == KVM_INVALID_ADDR) {
 			er = EMULATE_FAIL;
 			break;
@@ -846,8 +853,7 @@ kvm_mips_emulate_load(uint32_t inst, uint32_t cause,
 			break;
 		}
 		run->mmio.phys_addr =
-		    kvm_mips_callbacks->gva_to_gpa(vcpu->arch.
-						   host_cp0_badvaddr);
+		    kvm_mips_callbacks->gva_to_gpa(vcpu_te->host_cp0_badvaddr);
 		if (run->mmio.phys_addr == KVM_INVALID_ADDR) {
 			er = EMULATE_FAIL;
 			break;
@@ -877,22 +883,24 @@ int kvm_mips_sync_icache(unsigned long va, struct kvm_vcpu *vcpu)
 {
 	unsigned long offset = (va & ~PAGE_MASK);
 	struct kvm *kvm = vcpu->kvm;
+	struct kvm_mips_te *kvm_mips_te = kvm->arch.impl;
 	unsigned long pa;
 	gfn_t gfn;
 	pfn_t pfn;
 
 	gfn = va >> PAGE_SHIFT;
 
-	if (gfn >= kvm->arch.guest_pmap_npages) {
+	if (gfn >= kvm_mips_te->guest_pmap_npages) {
 		printk("%s: Invalid gfn: %#llx\n", __func__, gfn);
 		kvm_mips_dump_host_tlbs();
-		kvm_arch_vcpu_dump_regs(vcpu);
+		kvm_mips_te_vcpu_dump_regs(vcpu);
 		return -1;
 	}
-	pfn = kvm->arch.guest_pmap[gfn];
+	pfn = kvm_mips_te->guest_pmap[gfn];
 	pa = (pfn << PAGE_SHIFT) | offset;
 
-	printk("%s: va: %#lx, unmapped: %#x\n", __func__, va, CKSEG0ADDR(pa));
+	printk("%s: va: %#lx, unmapped: %#lx\n", __func__, va,
+	       (unsigned long)CKSEG0ADDR(pa));
 
 	mips32_SyncICache(CKSEG0ADDR(pa), 32);
 	return 0;
@@ -915,9 +923,8 @@ enum emulation_result
 kvm_mips_emulate_cache(uint32_t inst, uint32_t *opc, uint32_t cause,
 		       struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
-	extern void (*r4k_blast_dcache) (void);
-	extern void (*r4k_blast_icache) (void);
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	enum emulation_result er = EMULATE_DONE;
 	int32_t offset, cache, op_inst, op, base;
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
@@ -928,7 +935,7 @@ kvm_mips_emulate_cache(uint32_t inst, uint32_t *opc, uint32_t cause,
 	 * Update PC and hold onto current PC in case there is
 	 * an error and we want to rollback the PC
 	 */
-	curr_pc = vcpu->arch.pc;
+	curr_pc = vcpu->arch.epc;
 	er = update_pc(vcpu, cause);
 	if (er == EMULATE_FAIL)
 		return er;
@@ -950,13 +957,13 @@ kvm_mips_emulate_cache(uint32_t inst, uint32_t *opc, uint32_t cause,
 	if (op == MIPS_CACHE_OP_INDEX_INV) {
 		kvm_debug
 		    ("@ %#lx/%#lx CACHE (cache: %#x, op: %#x, base[%d]: %#lx, offset: %#x\n",
-		     vcpu->arch.pc, vcpu->arch.gprs[31], cache, op, base,
+		     vcpu->arch.epc, vcpu->arch.gprs[31], cache, op, base,
 		     arch->gprs[base], offset);
 
 		if (cache == MIPS_CACHE_DCACHE)
-			r4k_blast_dcache();
+			__flush_cache_all();
 		else if (cache == MIPS_CACHE_ICACHE)
-			r4k_blast_icache();
+			__flush_cache_all();
 		else {
 			printk("%s: unsupported CACHE INDEX operation\n",
 			       __func__);
@@ -992,14 +999,14 @@ kvm_mips_emulate_cache(uint32_t inst, uint32_t *opc, uint32_t cause,
 						   (cop0) & ASID_MASK));
 
 		if (index < 0) {
-			vcpu->arch.host_cp0_entryhi = (va & VPN2_MASK);
-			vcpu->arch.host_cp0_badvaddr = va;
+			vcpu_te->host_cp0_entryhi = (va & VPN2_MASK);
+			vcpu_te->host_cp0_badvaddr = va;
 			er = kvm_mips_emulate_tlbmiss_ld(cause, NULL, run,
 							 vcpu);
 			preempt_enable();
 			goto dont_update_pc;
 		} else {
-			struct kvm_mips_tlb *tlb = &vcpu->arch.guest_tlb[index];
+			struct kvm_mips_tlb *tlb = &vcpu_te->guest_tlb[index];
 			/* Check if the entry is valid, if not then setup a TLB invalid exception to the guest */
 			if (!TLB_IS_VALID(*tlb, va)) {
 				er = kvm_mips_emulate_tlbinv_ld(cause, NULL,
@@ -1057,7 +1064,7 @@ skip_fault:
 	/*
 	 * Rollback PC
 	 */
-	vcpu->arch.pc = curr_pc;
+	vcpu->arch.epc = curr_pc;
       done:
 	return er;
 }
@@ -1104,7 +1111,7 @@ kvm_mips_emulate_inst(unsigned long cause, uint32_t *opc,
 	default:
 		printk("Instruction emulation not supported (%p/%#x)\n", opc,
 		       inst);
-		kvm_arch_vcpu_dump_regs(vcpu);
+		kvm_mips_te_vcpu_dump_regs(vcpu);
 		er = EMULATE_FAIL;
 		break;
 	}
@@ -1116,13 +1123,14 @@ enum emulation_result
 kvm_mips_emulate_syscall(unsigned long cause, uint32_t *opc,
 			 struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
 	enum emulation_result er = EMULATE_DONE;
 
 	if ((kvm_read_c0_guest_status(cop0) & ST0_EXL) == 0) {
 		/* save old pc */
-		kvm_write_c0_guest_epc(cop0, arch->pc);
+		kvm_write_c0_guest_epc(cop0, arch->epc);
 		kvm_set_c0_guest_status(cop0, ST0_EXL);
 
 		if (cause & CAUSEF_BD)
@@ -1130,13 +1138,13 @@ kvm_mips_emulate_syscall(unsigned long cause, uint32_t *opc,
 		else
 			kvm_clear_c0_guest_cause(cop0, CAUSEF_BD);
 
-		kvm_debug("Delivering SYSCALL @ pc %#lx\n", arch->pc);
+		kvm_debug("Delivering SYSCALL @ pc %#lx\n", arch->epc);
 
 		kvm_change_c0_guest_cause(cop0, (0xff),
 					  (T_SYSCALL << CAUSEB_EXCCODE));
 
 		/* Set PC to the exception entry point */
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
 
 	} else {
 		printk("Trying to deliver SYSCALL when EXL is already set\n");
@@ -1150,15 +1158,16 @@ enum emulation_result
 kvm_mips_emulate_tlbmiss_ld(unsigned long cause, uint32_t *opc,
 			    struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
 	enum emulation_result er = EMULATE_DONE;
-	unsigned long entryhi = (vcpu->arch.  host_cp0_badvaddr & VPN2_MASK) |
+	unsigned long entryhi = (vcpu_te->host_cp0_badvaddr & VPN2_MASK) |
 				(kvm_read_c0_guest_entryhi(cop0) & ASID_MASK);
 
 	if ((kvm_read_c0_guest_status(cop0) & ST0_EXL) == 0) {
 		/* save old pc */
-		kvm_write_c0_guest_epc(cop0, arch->pc);
+		kvm_write_c0_guest_epc(cop0, arch->epc);
 		kvm_set_c0_guest_status(cop0, ST0_EXL);
 
 		if (cause & CAUSEF_BD)
@@ -1167,23 +1176,23 @@ kvm_mips_emulate_tlbmiss_ld(unsigned long cause, uint32_t *opc,
 			kvm_clear_c0_guest_cause(cop0, CAUSEF_BD);
 
 		kvm_debug("[EXL == 0] delivering TLB MISS @ pc %#lx\n",
-			  arch->pc);
+			  arch->epc);
 
 		/* set pc to the exception entry point */
-		arch->pc = KVM_GUEST_KSEG0 + 0x0;
+		arch->epc = KVM_GUEST_KSEG0 + 0x0;
 
 	} else {
 		kvm_debug("[EXL == 1] delivering TLB MISS @ pc %#lx\n",
-			  arch->pc);
+			  arch->epc);
 
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
 	}
 
 	kvm_change_c0_guest_cause(cop0, (0xff),
 				  (T_TLB_LD_MISS << CAUSEB_EXCCODE));
 
 	/* setup badvaddr, context and entryhi registers for the guest */
-	kvm_write_c0_guest_badvaddr(cop0, vcpu->arch.host_cp0_badvaddr);
+	kvm_write_c0_guest_badvaddr(cop0, vcpu_te->host_cp0_badvaddr);
 	/* XXXKYMA: is the context register used by linux??? */
 	kvm_write_c0_guest_entryhi(cop0, entryhi);
 	/* Blow away the shadow host TLBs */
@@ -1196,16 +1205,17 @@ enum emulation_result
 kvm_mips_emulate_tlbinv_ld(unsigned long cause, uint32_t *opc,
 			   struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
 	enum emulation_result er = EMULATE_DONE;
 	unsigned long entryhi =
-		(vcpu->arch.host_cp0_badvaddr & VPN2_MASK) |
+		(vcpu_te->host_cp0_badvaddr & VPN2_MASK) |
 		(kvm_read_c0_guest_entryhi(cop0) & ASID_MASK);
 
 	if ((kvm_read_c0_guest_status(cop0) & ST0_EXL) == 0) {
 		/* save old pc */
-		kvm_write_c0_guest_epc(cop0, arch->pc);
+		kvm_write_c0_guest_epc(cop0, arch->epc);
 		kvm_set_c0_guest_status(cop0, ST0_EXL);
 
 		if (cause & CAUSEF_BD)
@@ -1214,22 +1224,22 @@ kvm_mips_emulate_tlbinv_ld(unsigned long cause, uint32_t *opc,
 			kvm_clear_c0_guest_cause(cop0, CAUSEF_BD);
 
 		kvm_debug("[EXL == 0] delivering TLB INV @ pc %#lx\n",
-			  arch->pc);
+			  arch->epc);
 
 		/* set pc to the exception entry point */
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
 
 	} else {
 		kvm_debug("[EXL == 1] delivering TLB MISS @ pc %#lx\n",
-			  arch->pc);
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
+			  arch->epc);
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
 	}
 
 	kvm_change_c0_guest_cause(cop0, (0xff),
 				  (T_TLB_LD_MISS << CAUSEB_EXCCODE));
 
 	/* setup badvaddr, context and entryhi registers for the guest */
-	kvm_write_c0_guest_badvaddr(cop0, vcpu->arch.host_cp0_badvaddr);
+	kvm_write_c0_guest_badvaddr(cop0, vcpu_te->host_cp0_badvaddr);
 	/* XXXKYMA: is the context register used by linux??? */
 	kvm_write_c0_guest_entryhi(cop0, entryhi);
 	/* Blow away the shadow host TLBs */
@@ -1242,15 +1252,16 @@ enum emulation_result
 kvm_mips_emulate_tlbmiss_st(unsigned long cause, uint32_t *opc,
 			    struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
 	enum emulation_result er = EMULATE_DONE;
-	unsigned long entryhi = (vcpu->arch.host_cp0_badvaddr & VPN2_MASK) |
+	unsigned long entryhi = (vcpu_te->host_cp0_badvaddr & VPN2_MASK) |
 				(kvm_read_c0_guest_entryhi(cop0) & ASID_MASK);
 
 	if ((kvm_read_c0_guest_status(cop0) & ST0_EXL) == 0) {
 		/* save old pc */
-		kvm_write_c0_guest_epc(cop0, arch->pc);
+		kvm_write_c0_guest_epc(cop0, arch->epc);
 		kvm_set_c0_guest_status(cop0, ST0_EXL);
 
 		if (cause & CAUSEF_BD)
@@ -1259,21 +1270,21 @@ kvm_mips_emulate_tlbmiss_st(unsigned long cause, uint32_t *opc,
 			kvm_clear_c0_guest_cause(cop0, CAUSEF_BD);
 
 		kvm_debug("[EXL == 0] Delivering TLB MISS @ pc %#lx\n",
-			  arch->pc);
+			  arch->epc);
 
 		/* Set PC to the exception entry point */
-		arch->pc = KVM_GUEST_KSEG0 + 0x0;
+		arch->epc = KVM_GUEST_KSEG0 + 0x0;
 	} else {
 		kvm_debug("[EXL == 1] Delivering TLB MISS @ pc %#lx\n",
-			  arch->pc);
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
+			  arch->epc);
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
 	}
 
 	kvm_change_c0_guest_cause(cop0, (0xff),
 				  (T_TLB_ST_MISS << CAUSEB_EXCCODE));
 
 	/* setup badvaddr, context and entryhi registers for the guest */
-	kvm_write_c0_guest_badvaddr(cop0, vcpu->arch.host_cp0_badvaddr);
+	kvm_write_c0_guest_badvaddr(cop0, vcpu_te->host_cp0_badvaddr);
 	/* XXXKYMA: is the context register used by linux??? */
 	kvm_write_c0_guest_entryhi(cop0, entryhi);
 	/* Blow away the shadow host TLBs */
@@ -1286,15 +1297,16 @@ enum emulation_result
 kvm_mips_emulate_tlbinv_st(unsigned long cause, uint32_t *opc,
 			   struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
 	enum emulation_result er = EMULATE_DONE;
-	unsigned long entryhi = (vcpu->arch.host_cp0_badvaddr & VPN2_MASK) |
+	unsigned long entryhi = (vcpu_te->host_cp0_badvaddr & VPN2_MASK) |
 		(kvm_read_c0_guest_entryhi(cop0) & ASID_MASK);
 
 	if ((kvm_read_c0_guest_status(cop0) & ST0_EXL) == 0) {
 		/* save old pc */
-		kvm_write_c0_guest_epc(cop0, arch->pc);
+		kvm_write_c0_guest_epc(cop0, arch->epc);
 		kvm_set_c0_guest_status(cop0, ST0_EXL);
 
 		if (cause & CAUSEF_BD)
@@ -1303,21 +1315,21 @@ kvm_mips_emulate_tlbinv_st(unsigned long cause, uint32_t *opc,
 			kvm_clear_c0_guest_cause(cop0, CAUSEF_BD);
 
 		kvm_debug("[EXL == 0] Delivering TLB MISS @ pc %#lx\n",
-			  arch->pc);
+			  arch->epc);
 
 		/* Set PC to the exception entry point */
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
 	} else {
 		kvm_debug("[EXL == 1] Delivering TLB MISS @ pc %#lx\n",
-			  arch->pc);
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
+			  arch->epc);
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
 	}
 
 	kvm_change_c0_guest_cause(cop0, (0xff),
 				  (T_TLB_ST_MISS << CAUSEB_EXCCODE));
 
 	/* setup badvaddr, context and entryhi registers for the guest */
-	kvm_write_c0_guest_badvaddr(cop0, vcpu->arch.host_cp0_badvaddr);
+	kvm_write_c0_guest_badvaddr(cop0, vcpu_te->host_cp0_badvaddr);
 	/* XXXKYMA: is the context register used by linux??? */
 	kvm_write_c0_guest_entryhi(cop0, entryhi);
 	/* Blow away the shadow host TLBs */
@@ -1339,8 +1351,9 @@ kvm_mips_handle_tlbmod(unsigned long cause, uint32_t *opc,
 	 */
 	index = kvm_mips_guest_tlb_lookup(vcpu, entryhi);
 	if (index < 0) {
+		struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
 		/* XXXKYMA Invalidate and retry */
-		kvm_mips_host_tlb_inv(vcpu, vcpu->arch.host_cp0_badvaddr);
+		kvm_mips_host_tlb_inv(vcpu, vcpu_te->host_cp0_badvaddr);
 		kvm_err("%s: host got TLBMOD for %#lx but entry not present in Guest TLB\n",
 		     __func__, entryhi);
 		kvm_mips_dump_guest_tlbs(vcpu);
@@ -1357,15 +1370,16 @@ enum emulation_result
 kvm_mips_emulate_tlbmod(unsigned long cause, uint32_t *opc,
 			struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
-	unsigned long entryhi = (vcpu->arch.host_cp0_badvaddr & VPN2_MASK) |
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
+	unsigned long entryhi = (vcpu_te->host_cp0_badvaddr & VPN2_MASK) |
 				(kvm_read_c0_guest_entryhi(cop0) & ASID_MASK);
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
 	enum emulation_result er = EMULATE_DONE;
 
 	if ((kvm_read_c0_guest_status(cop0) & ST0_EXL) == 0) {
 		/* save old pc */
-		kvm_write_c0_guest_epc(cop0, arch->pc);
+		kvm_write_c0_guest_epc(cop0, arch->epc);
 		kvm_set_c0_guest_status(cop0, ST0_EXL);
 
 		if (cause & CAUSEF_BD)
@@ -1374,19 +1388,19 @@ kvm_mips_emulate_tlbmod(unsigned long cause, uint32_t *opc,
 			kvm_clear_c0_guest_cause(cop0, CAUSEF_BD);
 
 		kvm_debug("[EXL == 0] Delivering TLB MOD @ pc %#lx\n",
-			  arch->pc);
+			  arch->epc);
 
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
 	} else {
 		kvm_debug("[EXL == 1] Delivering TLB MOD @ pc %#lx\n",
-			  arch->pc);
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
+			  arch->epc);
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
 	}
 
 	kvm_change_c0_guest_cause(cop0, (0xff), (T_TLB_MOD << CAUSEB_EXCCODE));
 
 	/* setup badvaddr, context and entryhi registers for the guest */
-	kvm_write_c0_guest_badvaddr(cop0, vcpu->arch.host_cp0_badvaddr);
+	kvm_write_c0_guest_badvaddr(cop0, vcpu_te->host_cp0_badvaddr);
 	/* XXXKYMA: is the context register used by linux??? */
 	kvm_write_c0_guest_entryhi(cop0, entryhi);
 	/* Blow away the shadow host TLBs */
@@ -1399,13 +1413,14 @@ enum emulation_result
 kvm_mips_emulate_fpu_exc(unsigned long cause, uint32_t *opc,
 			 struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
 	enum emulation_result er = EMULATE_DONE;
 
 	if ((kvm_read_c0_guest_status(cop0) & ST0_EXL) == 0) {
 		/* save old pc */
-		kvm_write_c0_guest_epc(cop0, arch->pc);
+		kvm_write_c0_guest_epc(cop0, arch->epc);
 		kvm_set_c0_guest_status(cop0, ST0_EXL);
 
 		if (cause & CAUSEF_BD)
@@ -1415,7 +1430,7 @@ kvm_mips_emulate_fpu_exc(unsigned long cause, uint32_t *opc,
 
 	}
 
-	arch->pc = KVM_GUEST_KSEG0 + 0x180;
+	arch->epc = KVM_GUEST_KSEG0 + 0x180;
 
 	kvm_change_c0_guest_cause(cop0, (0xff),
 				  (T_COP_UNUSABLE << CAUSEB_EXCCODE));
@@ -1428,13 +1443,14 @@ enum emulation_result
 kvm_mips_emulate_ri_exc(unsigned long cause, uint32_t *opc,
 			struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
 	enum emulation_result er = EMULATE_DONE;
 
 	if ((kvm_read_c0_guest_status(cop0) & ST0_EXL) == 0) {
 		/* save old pc */
-		kvm_write_c0_guest_epc(cop0, arch->pc);
+		kvm_write_c0_guest_epc(cop0, arch->epc);
 		kvm_set_c0_guest_status(cop0, ST0_EXL);
 
 		if (cause & CAUSEF_BD)
@@ -1442,13 +1458,13 @@ kvm_mips_emulate_ri_exc(unsigned long cause, uint32_t *opc,
 		else
 			kvm_clear_c0_guest_cause(cop0, CAUSEF_BD);
 
-		kvm_debug("Delivering RI @ pc %#lx\n", arch->pc);
+		kvm_debug("Delivering RI @ pc %#lx\n", arch->epc);
 
 		kvm_change_c0_guest_cause(cop0, (0xff),
 					  (T_RES_INST << CAUSEB_EXCCODE));
 
 		/* Set PC to the exception entry point */
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
 
 	} else {
 		kvm_err("Trying to deliver RI when EXL is already set\n");
@@ -1462,13 +1478,14 @@ enum emulation_result
 kvm_mips_emulate_bp_exc(unsigned long cause, uint32_t *opc,
 			struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
 	enum emulation_result er = EMULATE_DONE;
 
 	if ((kvm_read_c0_guest_status(cop0) & ST0_EXL) == 0) {
 		/* save old pc */
-		kvm_write_c0_guest_epc(cop0, arch->pc);
+		kvm_write_c0_guest_epc(cop0, arch->epc);
 		kvm_set_c0_guest_status(cop0, ST0_EXL);
 
 		if (cause & CAUSEF_BD)
@@ -1476,13 +1493,13 @@ kvm_mips_emulate_bp_exc(unsigned long cause, uint32_t *opc,
 		else
 			kvm_clear_c0_guest_cause(cop0, CAUSEF_BD);
 
-		kvm_debug("Delivering BP @ pc %#lx\n", arch->pc);
+		kvm_debug("Delivering BP @ pc %#lx\n", arch->epc);
 
 		kvm_change_c0_guest_cause(cop0, (0xff),
 					  (T_BREAK << CAUSEB_EXCCODE));
 
 		/* Set PC to the exception entry point */
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
 
 	} else {
 		printk("Trying to deliver BP when EXL is already set\n");
@@ -1513,7 +1530,8 @@ enum emulation_result
 kvm_mips_handle_ri(unsigned long cause, uint32_t *opc,
 		   struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
 	enum emulation_result er = EMULATE_DONE;
 	unsigned long curr_pc;
@@ -1523,7 +1541,7 @@ kvm_mips_handle_ri(unsigned long cause, uint32_t *opc,
 	 * Update PC and hold onto current PC in case there is
 	 * an error and we want to rollback the PC
 	 */
-	curr_pc = vcpu->arch.pc;
+	curr_pc = vcpu->arch.epc;
 	er = update_pc(vcpu, cause);
 	if (er == EMULATE_FAIL)
 		return er;
@@ -1589,7 +1607,7 @@ kvm_mips_handle_ri(unsigned long cause, uint32_t *opc,
 	 * Rollback PC only if emulation was unsuccessful
 	 */
 	if (er == EMULATE_FAIL) {
-		vcpu->arch.pc = curr_pc;
+		vcpu->arch.epc = curr_pc;
 		er = kvm_mips_emulate_ri_exc(cause, opc, run, vcpu);
 	}
 	return er;
@@ -1598,7 +1616,8 @@ kvm_mips_handle_ri(unsigned long cause, uint32_t *opc,
 enum emulation_result
 kvm_mips_complete_mmio_load(struct kvm_vcpu *vcpu, struct kvm_run *run)
 {
-	unsigned long *gpr = &vcpu->arch.gprs[vcpu->arch.io_gpr];
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	unsigned long *gpr = &vcpu->arch.gprs[vcpu_te->io_gpr];
 	enum emulation_result er = EMULATE_DONE;
 	unsigned long curr_pc;
 
@@ -1612,8 +1631,8 @@ kvm_mips_complete_mmio_load(struct kvm_vcpu *vcpu, struct kvm_run *run)
 	 * Update PC and hold onto current PC in case there is
 	 * an error and we want to rollback the PC
 	 */
-	curr_pc = vcpu->arch.pc;
-	er = update_pc(vcpu, vcpu->arch.pending_load_cause);
+	curr_pc = vcpu->arch.epc;
+	er = update_pc(vcpu, vcpu_te->pending_load_cause);
 	if (er == EMULATE_FAIL)
 		return er;
 
@@ -1637,10 +1656,10 @@ kvm_mips_complete_mmio_load(struct kvm_vcpu *vcpu, struct kvm_run *run)
 		break;
 	}
 
-	if (vcpu->arch.pending_load_cause & CAUSEF_BD)
+	if (vcpu_te->pending_load_cause & CAUSEF_BD)
 		kvm_debug
 		    ("[%#lx] Completing %d byte BD Load to gpr %d (0x%08lx) type %d\n",
-		     vcpu->arch.pc, run->mmio.len, vcpu->arch.io_gpr, *gpr,
+		     vcpu->arch.epc, run->mmio.len, vcpu_te->io_gpr, *gpr,
 		     vcpu->mmio_needed);
 
 done:
@@ -1652,13 +1671,14 @@ kvm_mips_emulate_exc(unsigned long cause, uint32_t *opc,
 		     struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
 	uint32_t exccode = (cause >> CAUSEB_EXCCODE) & 0x1f;
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
 	enum emulation_result er = EMULATE_DONE;
 
 	if ((kvm_read_c0_guest_status(cop0) & ST0_EXL) == 0) {
 		/* save old pc */
-		kvm_write_c0_guest_epc(cop0, arch->pc);
+		kvm_write_c0_guest_epc(cop0, arch->epc);
 		kvm_set_c0_guest_status(cop0, ST0_EXL);
 
 		if (cause & CAUSEF_BD)
@@ -1670,8 +1690,8 @@ kvm_mips_emulate_exc(unsigned long cause, uint32_t *opc,
 					  (exccode << CAUSEB_EXCCODE));
 
 		/* Set PC to the exception entry point */
-		arch->pc = KVM_GUEST_KSEG0 + 0x180;
-		kvm_write_c0_guest_badvaddr(cop0, vcpu->arch.host_cp0_badvaddr);
+		arch->epc = KVM_GUEST_KSEG0 + 0x180;
+		kvm_write_c0_guest_badvaddr(cop0, vcpu_te->host_cp0_badvaddr);
 
 		kvm_debug("Delivering EXC %d @ pc %#lx, badVaddr: %#lx\n",
 			  exccode, kvm_read_c0_guest_epc(cop0),
@@ -1690,7 +1710,8 @@ kvm_mips_check_privilege(unsigned long cause, uint32_t *opc,
 {
 	enum emulation_result er = EMULATE_DONE;
 	uint32_t exccode = (cause >> CAUSEB_EXCCODE) & 0x1f;
-	unsigned long badvaddr = vcpu->arch.host_cp0_badvaddr;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	unsigned long badvaddr = vcpu_te->host_cp0_badvaddr;
 
 	int usermode = !KVM_GUEST_KERNEL_MODE(vcpu);
 
@@ -1774,11 +1795,12 @@ kvm_mips_handle_tlbmiss(unsigned long cause, uint32_t *opc,
 {
 	enum emulation_result er = EMULATE_DONE;
 	uint32_t exccode = (cause >> CAUSEB_EXCCODE) & 0x1f;
-	unsigned long va = vcpu->arch.host_cp0_badvaddr;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	unsigned long va = vcpu_te->host_cp0_badvaddr;
 	int index;
 
 	kvm_debug("kvm_mips_handle_tlbmiss: badvaddr: %#lx, entryhi: %#lx\n",
-		  vcpu->arch.host_cp0_badvaddr, vcpu->arch.host_cp0_entryhi);
+		  vcpu_te->host_cp0_badvaddr, vcpu_te->host_cp0_entryhi);
 
 	/* KVM would not have got the exception if this entry was valid in the shadow host TLB
 	 * Check the Guest TLB, if the entry is not there then send the guest an
@@ -1787,8 +1809,8 @@ kvm_mips_handle_tlbmiss(unsigned long cause, uint32_t *opc,
 	 */
 	index = kvm_mips_guest_tlb_lookup(vcpu,
 					  (va & VPN2_MASK) |
-					  (kvm_read_c0_guest_entryhi
-					   (vcpu->arch.cop0) & ASID_MASK));
+					  (kvm_read_c0_guest_entryhi(vcpu_te->cop0) &
+					   ASID_MASK));
 	if (index < 0) {
 		if (exccode == T_TLB_LD_MISS) {
 			er = kvm_mips_emulate_tlbmiss_ld(cause, opc, run, vcpu);
@@ -1799,7 +1821,7 @@ kvm_mips_handle_tlbmiss(unsigned long cause, uint32_t *opc,
 			er = EMULATE_FAIL;
 		}
 	} else {
-		struct kvm_mips_tlb *tlb = &vcpu->arch.guest_tlb[index];
+		struct kvm_mips_tlb *tlb = &vcpu_te->guest_tlb[index];
 
 		/* Check if the entry is valid, if not then setup a TLB invalid exception to the guest */
 		if (!TLB_IS_VALID(*tlb, va)) {

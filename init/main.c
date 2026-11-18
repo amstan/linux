@@ -75,6 +75,8 @@
 #include <linux/blkdev.h>
 #include <linux/elevator.h>
 #include <linux/random.h>
+#include <linux/posix-timers.h>
+#include <linux/sched_clock.h>
 
 #include <asm/io.h>
 #include <asm/bugs.h>
@@ -153,6 +155,64 @@ static int __init set_reset_devices(char *str)
 }
 
 __setup("reset_devices", set_reset_devices);
+
+#if defined(CONFIG_X86_64) && defined(CONFIG_PAX_MEMORY_UDEREF)
+unsigned long pax_user_shadow_base __read_only;
+EXPORT_SYMBOL(pax_user_shadow_base);
+extern char pax_enter_kernel_user[];
+extern char pax_exit_kernel_user[];
+#endif
+
+#if defined(CONFIG_X86) && defined(CONFIG_PAX_MEMORY_UDEREF)
+static int __init setup_pax_nouderef(char *str)
+{
+#ifdef CONFIG_X86_32
+	unsigned int cpu;
+	struct desc_struct *gdt;
+
+	for (cpu = 0; cpu < nr_cpu_ids; cpu++) {
+		gdt = get_cpu_gdt_table(cpu);
+		gdt[GDT_ENTRY_KERNEL_DS].type = 3;
+		gdt[GDT_ENTRY_KERNEL_DS].limit = 0xf;
+		gdt[GDT_ENTRY_DEFAULT_USER_CS].limit = 0xf;
+		gdt[GDT_ENTRY_DEFAULT_USER_DS].limit = 0xf;
+	}
+	loadsegment(ds, __KERNEL_DS);
+	loadsegment(es, __KERNEL_DS);
+	loadsegment(ss, __KERNEL_DS);
+#else
+	memcpy(pax_enter_kernel_user, (unsigned char []){0xc3}, 1);
+	memcpy(pax_exit_kernel_user, (unsigned char []){0xc3}, 1);
+	clone_pgd_mask = ~(pgdval_t)0UL;
+	pax_user_shadow_base = 0UL;
+	setup_clear_cpu_cap(X86_FEATURE_PCID);
+#endif
+
+	return 0;
+}
+early_param("pax_nouderef", setup_pax_nouderef);
+
+#ifdef CONFIG_X86_64
+static int __init setup_pax_weakuderef(char *str)
+{
+	if (clone_pgd_mask != ~(pgdval_t)0UL)
+		pax_user_shadow_base = 1UL << TASK_SIZE_MAX_SHIFT;
+	return 1;
+}
+__setup("pax_weakuderef", setup_pax_weakuderef);
+#endif
+#endif
+
+#ifdef CONFIG_PAX_SOFTMODE
+int pax_softmode;
+
+static int __init setup_pax_softmode(char *str)
+{
+	get_option(&str, &pax_softmode);
+	return 1;
+}
+__setup("pax_softmode=", setup_pax_softmode);
+#endif
 
 static const char * argv_init[MAX_INIT_ARGS+2] = { "init", NULL, };
 const char * envp_init[MAX_INIT_ENVS+2] = { "HOME=/", "TERM=linux", NULL, };
@@ -469,6 +529,10 @@ static void __init mm_init(void)
 	vmalloc_init();
 }
 
+#if defined(CONFIG_MICROSTATE_ACCT) && defined(CONFIG_SPARSE_IRQ)
+int __init init_msa_irq(void);
+#endif
+
 asmlinkage void __init start_kernel(void)
 {
 	char * command_line;
@@ -505,10 +569,15 @@ asmlinkage void __init start_kernel(void)
 	setup_command_line(command_line);
 	setup_nr_cpu_ids();
 	setup_per_cpu_areas();
+	softirq_early_init();
 	smp_prepare_boot_cpu();	/* arch-specific boot-cpu hooks */
 
 	build_all_zonelists(NULL, NULL);
 	page_alloc_init();
+
+#if defined(CONFIG_MICROSTATE_ACCT) && defined(CONFIG_SPARSE_IRQ)
+	init_msa_irq();
+#endif
 
 	pr_notice("Kernel command line: %s\n", boot_command_line);
 	parse_early_param();
@@ -556,8 +625,10 @@ asmlinkage void __init start_kernel(void)
 	softirq_init();
 	timekeeping_init();
 	time_init();
+	sched_clock_postinit();
 	profile_init();
 	call_function_init();
+	msa_init(&init_task);
 	WARN(!irqs_disabled(), "Interrupts were enabled early\n");
 	early_boot_irqs_disabled = false;
 	local_irq_enable();
@@ -660,8 +731,6 @@ static void __init do_ctors(void)
 bool initcall_debug;
 core_param(initcall_debug, initcall_debug, bool, 0644);
 
-static char msgbuf[64];
-
 static int __init_or_module do_one_initcall_debug(initcall_t fn)
 {
 	ktime_t calltime, delta, rettime;
@@ -684,23 +753,22 @@ int __init_or_module do_one_initcall(initcall_t fn)
 {
 	int count = preempt_count();
 	int ret;
+	const char *msg1 = "", *msg2 = "";
 
 	if (initcall_debug)
 		ret = do_one_initcall_debug(fn);
 	else
 		ret = fn();
 
-	msgbuf[0] = 0;
-
 	if (preempt_count() != count) {
-		sprintf(msgbuf, "preemption imbalance ");
+		msg1 = " preemption imbalance";
 		preempt_count() = count;
 	}
 	if (irqs_disabled()) {
-		strlcat(msgbuf, "disabled interrupts ", sizeof(msgbuf));
+		msg2 = " disabled interrupts";
 		local_irq_enable();
 	}
-	WARN(msgbuf[0], "initcall %pF returned with %s\n", fn, msgbuf);
+	WARN(*msg1 || *msg2, "initcall %pF returned with%s%s\n", fn, msg1, msg2);
 
 	return ret;
 }
@@ -753,8 +821,14 @@ static void __init do_initcall_level(int level)
 		   level, level,
 		   &repair_env_string);
 
-	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
+	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++) {
 		do_one_initcall(*fn);
+
+#ifdef LATENT_ENTROPY_PLUGIN
+		add_device_randomness((const void *)&latent_entropy, sizeof(latent_entropy));
+#endif
+
+	}
 }
 
 static void __init do_initcalls(void)
@@ -789,8 +863,14 @@ static void __init do_pre_smp_initcalls(void)
 {
 	initcall_t *fn;
 
-	for (fn = __initcall_start; fn < __initcall0_start; fn++)
+	for (fn = __initcall_start; fn < __initcall0_start; fn++) {
 		do_one_initcall(*fn);
+
+#ifdef LATENT_ENTROPY_PLUGIN
+		add_device_randomness((const void *)&latent_entropy, sizeof(latent_entropy));
+#endif
+
+	}
 }
 
 /*
@@ -808,8 +888,8 @@ static int run_init_process(const char *init_filename)
 {
 	argv_init[0] = init_filename;
 	return do_execve(init_filename,
-		(const char __user *const __user *)argv_init,
-		(const char __user *const __user *)envp_init);
+		(const char __user *const __force_user *)argv_init,
+		(const char __user *const __force_user *)envp_init);
 }
 
 static noinline void __init kernel_init_freeable(void);
@@ -886,7 +966,7 @@ static noinline void __init kernel_init_freeable(void)
 	do_basic_setup();
 
 	/* Open the /dev/console on the rootfs, this should never fail */
-	if (sys_open((const char __user *) "/dev/console", O_RDWR, 0) < 0)
+	if (sys_open((const char __force_user *) "/dev/console", O_RDWR, 0) < 0)
 		pr_err("Warning: unable to open an initial console.\n");
 
 	(void) sys_dup(0);
@@ -899,7 +979,7 @@ static noinline void __init kernel_init_freeable(void)
 	if (!ramdisk_execute_command)
 		ramdisk_execute_command = "/init";
 
-	if (sys_access((const char __user *) ramdisk_execute_command, 0) != 0) {
+	if (sys_access((const char __force_user *) ramdisk_execute_command, 0) != 0) {
 		ramdisk_execute_command = NULL;
 		prepare_namespace();
 	}

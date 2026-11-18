@@ -524,8 +524,8 @@ static void _mix_pool_bytes(struct entropy_store *r, const void *in,
 		input_rotate += i ? 7 : 14;
 	}
 
-	ACCESS_ONCE(r->input_rotate) = input_rotate;
-	ACCESS_ONCE(r->add_ptr) = i;
+	ACCESS_ONCE_RW(r->input_rotate) = input_rotate;
+	ACCESS_ONCE_RW(r->add_ptr) = i;
 	smp_wmb();
 
 	if (out)
@@ -676,9 +676,12 @@ static void add_timer_randomness(struct timer_rand_state *state, unsigned num)
 	preempt_disable();
 	/* if over the trickle threshold, use only 1 in 4096 samples */
 	if (input_pool.entropy_count > trickle_thresh &&
-	    ((__this_cpu_inc_return(trickle_count) - 1) & 0xfff))
-		goto out;
+	    ((__this_cpu_inc_return(trickle_count) - 1) & 0xfff)) {
+		preempt_enable();
+		return;
+	}
 
+	preempt_enable();
 	sample.jiffies = jiffies;
 	sample.cycles = get_cycles();
 	sample.num = num;
@@ -719,8 +722,6 @@ static void add_timer_randomness(struct timer_rand_state *state, unsigned num)
 		credit_entropy_bits(&input_pool,
 				    min_t(int, fls(delta>>1), 11));
 	}
-out:
-	preempt_enable();
 }
 
 void add_input_randomness(unsigned int type, unsigned int code,
@@ -741,18 +742,16 @@ EXPORT_SYMBOL_GPL(add_input_randomness);
 
 static DEFINE_PER_CPU(struct fast_pool, irq_randomness);
 
-void add_interrupt_randomness(int irq, int irq_flags)
+void add_interrupt_randomness(int irq, int irq_flags, __u64 ip)
 {
 	struct entropy_store	*r;
 	struct fast_pool	*fast_pool = &__get_cpu_var(irq_randomness);
-	struct pt_regs		*regs = get_irq_regs();
 	unsigned long		now = jiffies;
 	__u32			input[4], cycles = get_cycles();
 
 	input[0] = cycles ^ jiffies;
 	input[1] = irq;
-	if (regs) {
-		__u64 ip = instruction_pointer(regs);
+	if (ip) {
 		input[2] = ip;
 		input[3] = ip >> 32;
 	}
@@ -766,7 +765,11 @@ void add_interrupt_randomness(int irq, int irq_flags)
 	fast_pool->last = now;
 
 	r = nonblocking_pool.initialized ? &input_pool : &nonblocking_pool;
+#ifndef CONFIG_PREEMPT_RT_FULL
 	__mix_pool_bytes(r, &fast_pool->pool, sizeof(fast_pool->pool), NULL);
+#else
+	mix_pool_bytes(r, &fast_pool->pool, sizeof(fast_pool->pool), NULL);
+#endif
 	/*
 	 * If we don't have a valid cycle counter, and we see
 	 * back-to-back timer interrupts, then skip giving credit for
@@ -1032,7 +1035,7 @@ static ssize_t extract_entropy_user(struct entropy_store *r, void __user *buf,
 
 		extract_buf(r, tmp);
 		i = min_t(int, nbytes, EXTRACT_SIZE);
-		if (copy_to_user(buf, tmp, i)) {
+		if (i > sizeof(tmp) || copy_to_user(buf, tmp, i)) {
 			ret = -EFAULT;
 			break;
 		}
@@ -1368,7 +1371,7 @@ EXPORT_SYMBOL(generate_random_uuid);
 #include <linux/sysctl.h>
 
 static int min_read_thresh = 8, min_write_thresh;
-static int max_read_thresh = INPUT_POOL_WORDS * 32;
+static int max_read_thresh = OUTPUT_POOL_WORDS * 32;
 static int max_write_thresh = INPUT_POOL_WORDS * 32;
 static char sysctl_bootid[16];
 
@@ -1384,7 +1387,7 @@ static char sysctl_bootid[16];
 static int proc_do_uuid(ctl_table *table, int write,
 			void __user *buffer, size_t *lenp, loff_t *ppos)
 {
-	ctl_table fake_table;
+	ctl_table_no_const fake_table;
 	unsigned char buf[64], tmp_uuid[16], *uuid;
 
 	uuid = table->data;

@@ -199,7 +199,7 @@ static void octeon_dma_free_coherent(struct device *dev, size_t size,
 	if (dma_release_from_coherent(dev, order, vaddr))
 		return;
 
-	swiotlb_free_coherent(dev, size, vaddr, dma_handle);
+	swiotlb_free_coherent(dev, size, vaddr, dma_handle, attrs);
 }
 
 static dma_addr_t octeon_unity_phys_to_dma(struct device *dev, phys_addr_t paddr)
@@ -276,7 +276,9 @@ void __init plat_swiotlb_setup(void)
 			continue;
 
 		/* These addresses map low for PCI. */
-		if (e->addr > 0x410000000ull && !OCTEON_IS_MODEL(OCTEON_CN6XXX))
+		if (e->addr > 0x410000000ull &&
+		    current_cpu_type() != CPU_CAVIUM_OCTEON2 &&
+		    current_cpu_type() != CPU_CAVIUM_OCTEON3)
 			continue;
 
 		addr_size += e->size;
@@ -308,7 +310,7 @@ void __init plat_swiotlb_setup(void)
 #endif
 #ifdef CONFIG_USB_OCTEON_OHCI
 	/* OCTEON II ohci is only 32-bit. */
-	if (OCTEON_IS_MODEL(OCTEON_CN6XXX) && max_addr >= 0x100000000ul)
+	if (current_cpu_type() == CPU_CAVIUM_OCTEON2 && max_addr >= 0x100000000ul)
 		swiotlbsize = 64 * (1<<20);
 #endif
 	swiotlb_nslabs = swiotlbsize >> IO_TLB_SHIFT;

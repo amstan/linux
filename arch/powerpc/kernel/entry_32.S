@@ -629,6 +629,40 @@ ppc_swapcontext:
 	b	sys_swapcontext
 
 /*
+ * Live dumping calls copy_proces from ptrace and may also do so from
+ * exit/exit_group, therefore full register set is required for them too.
+ */
+	.globl	ppc_ptrace
+ppc_ptrace:
+#ifdef CONFIG_LIVEDUMP
+	SAVE_NVGPRS(r1)
+	lwz	r0,_TRAP(r1)
+	rlwinm	r0,r0,0,0,30
+	stw	r0,_TRAP(r1)
+#endif
+	b	sys_ptrace
+
+	.globl	ppc_exit_group
+ppc_exit_group:
+#ifdef CONFIG_LIVEDUMP
+	SAVE_NVGPRS(r1)
+	lwz	r0,_TRAP(r1)
+	rlwinm	r0,r0,0,0,30
+	stw	r0,_TRAP(r1)
+#endif
+	b	sys_exit_group
+
+	.globl	ppc_exit
+ppc_exit:
+#ifdef CONFIG_LIVEDUMP
+	SAVE_NVGPRS(r1)
+	lwz	r0,_TRAP(r1)
+	rlwinm	r0,r0,0,0,30
+	stw	r0,_TRAP(r1)
+#endif
+	b	sys_exit
+
+/*
  * Top-level page fault handling.
  * This is in assembler because if do_page_fault tells us that
  * it is a bad kernel page fault, we want to save the non-volatile
@@ -890,7 +924,14 @@ resume_kernel:
 	cmpwi	0,r0,0		/* if non-zero, just restore regs and return */
 	bne	restore
 	andi.	r8,r8,_TIF_NEED_RESCHED
+	bne+	1f
+	lwz	r0,TI_PREEMPT_LAZY(r9)
+	cmpwi	0,r0,0		/* if non-zero, just restore regs and return */
+	bne	restore
+	lwz	r0,TI_FLAGS(r9)
+	andi.	r0,r0,_TIF_NEED_RESCHED_LAZY
 	beq+	restore
+1:
 	lwz	r3,_MSR(r1)
 	andi.	r0,r3,MSR_EE	/* interrupts off? */
 	beq	restore		/* don't schedule if so */
@@ -901,11 +942,11 @@ resume_kernel:
 	 */
 	bl	trace_hardirqs_off
 #endif
-1:	bl	preempt_schedule_irq
+2:	bl	preempt_schedule_irq
 	CURRENT_THREAD_INFO(r9, r1)
 	lwz	r3,TI_FLAGS(r9)
-	andi.	r0,r3,_TIF_NEED_RESCHED
-	bne-	1b
+	andi.	r0,r3,_TIF_NEED_RESCHED_MASK
+	bne-	2b
 #ifdef CONFIG_TRACE_IRQFLAGS
 	/* And now, to properly rebalance the above, we tell lockdep they
 	 * are being turned back on, which will happen when we return
@@ -1226,7 +1267,7 @@ global_dbcr0:
 #endif /* !(CONFIG_4xx || CONFIG_BOOKE) */
 
 do_work:			/* r10 contains MSR_KERNEL here */
-	andi.	r0,r9,_TIF_NEED_RESCHED
+	andi.	r0,r9,_TIF_NEED_RESCHED_MASK
 	beq	do_user_signal
 
 do_resched:			/* r10 contains MSR_KERNEL here */
@@ -1247,7 +1288,7 @@ recheck:
 	MTMSRD(r10)		/* disable interrupts */
 	CURRENT_THREAD_INFO(r9, r1)
 	lwz	r9,TI_FLAGS(r9)
-	andi.	r0,r9,_TIF_NEED_RESCHED
+	andi.	r0,r9,_TIF_NEED_RESCHED_MASK
 	bne-	do_resched
 	andi.	r0,r9,_TIF_USER_WORK_MASK
 	beq	restore_user

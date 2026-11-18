@@ -34,6 +34,7 @@
 #include <asm/unwind.h>
 #include <asm/tls.h>
 #include <asm/system_misc.h>
+#include <asm/opcodes.h>
 
 static const char *handler[]= {
 	"prefetch abort",
@@ -155,7 +156,7 @@ static void dump_instr(const char *lvl, struct pt_regs *regs)
 
 		if (!bad)
 			p += sprintf(p, i == 0 ? "(%0*x) " : "%0*x ",
-					width, val);
+					width, le32_to_cpu(val));
 		else {
 			p += sprintf(p, "bad PC value");
 			break;
@@ -410,23 +411,24 @@ asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 	if (processor_mode(regs) == SVC_MODE) {
 #ifdef CONFIG_THUMB2_KERNEL
 		if (thumb_mode(regs)) {
-			instr = ((u16 *)pc)[0];
+			instr = __mem_to_opcode_thumb16(((u16 *)pc)[0]);
 			if (is_wide_instruction(instr)) {
 				instr <<= 16;
-				instr |= ((u16 *)pc)[1];
+				instr |= __mem_to_opcode_thumb16(((u16 *)pc)[1]);
 			}
 		} else
 #endif
-			instr = *(u32 *) pc;
+			instr = __mem_to_opcode_arm(*(u32 *) pc);
 	} else if (thumb_mode(regs)) {
 		if (get_user(instr, (u16 __user *)pc))
 			goto die_sig;
+		instr = __mem_to_opcode_thumb16(instr);
 		if (is_wide_instruction(instr)) {
 			unsigned int instr2;
 			if (get_user(instr2, (u16 __user *)pc+1))
 				goto die_sig;
 			instr <<= 16;
-			instr |= instr2;
+			instr |= __mem_to_opcode_thumb16(instr2);
 		}
 	} else if (get_user(instr, (u32 __user *)pc)) {
 		goto die_sig;
@@ -600,7 +602,9 @@ asmlinkage int arm_syscall(int no, struct pt_regs *regs)
 			 * The user helper at 0xffff0fe0 must be used instead.
 			 * (see entry-armv.S for details)
 			 */
+			pax_open_kernel();
 			*((unsigned int *)0xffff0ff0) = regs->ARM_r0;
+			pax_close_kernel();
 		}
 		return 0;
 
@@ -856,5 +860,9 @@ void __init early_trap_init(void *vectors_base)
 	kuser_init(vectors_base);
 
 	flush_icache_range(vectors, vectors + PAGE_SIZE * 2);
-	modify_domain(DOMAIN_USER, DOMAIN_CLIENT);
+
+#ifndef CONFIG_PAX_MEMORY_UDEREF
+	modify_domain(DOMAIN_USER, DOMAIN_USERCLIENT);
+#endif
+
 }

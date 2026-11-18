@@ -26,6 +26,10 @@
 #include <linux/hw_breakpoint.h>
 #include <linux/cn_proc.h>
 #include <linux/compat.h>
+#include <linux/livedump.h>
+#include <linux/kthread.h>
+#include <linux/ioprio.h>
+#include <linux/oom.h>
 
 
 static int ptrace_trapping_sleep_fn(void *flags)
@@ -538,7 +542,7 @@ int ptrace_readdata(struct task_struct *tsk, unsigned long src, char __user *dst
 				break;
 			return -EIO;
 		}
-		if (copy_to_user(dst, buf, retval))
+		if (retval > sizeof(buf) || copy_to_user(dst, buf, retval))
 			return -EFAULT;
 		copied += retval;
 		src += retval;
@@ -663,7 +667,7 @@ static int ptrace_peek_siginfo(struct task_struct *child,
 			break;
 
 #ifdef CONFIG_COMPAT
-		if (unlikely(is_compat_task())) {
+		if (unlikely(is_compat_task() && !COMPAT_USE_NATIVE_SIGINFO)) {
 			compat_siginfo_t __user *uinfo = compat_ptr(data);
 
 			if (copy_siginfo_to_user32(uinfo, &info) ||
@@ -826,7 +830,7 @@ int ptrace_request(struct task_struct *child, long request,
 	bool seized = child->ptrace & PT_SEIZED;
 	int ret = -EIO;
 	siginfo_t siginfo, *si;
-	void __user *datavp = (void __user *) data;
+	void __user *datavp = (__force void __user *) data;
 	unsigned long __user *datalp = datavp;
 	unsigned long flags;
 
@@ -1013,6 +1017,147 @@ static struct task_struct *ptrace_get_task_struct(pid_t pid)
 #define arch_ptrace_attach(child)	do { } while (0)
 #endif
 
+#ifdef CONFIG_LIVEDUMP
+static int livedump_dumper_thread(void *arg)
+{
+	struct livedump_context *dump = arg;
+
+	/* Block all signals just to be safe. */
+	spin_lock_irq(&current->sighand->siglock);
+	sigfillset(&current->blocked);
+	recalc_sigpending();
+	spin_unlock_irq(&current->sighand->siglock);
+	livedump_take(dump);
+	complete_and_exit(&dump->thread_exit, 0);
+}
+
+long ptrace_livedump(struct task_struct *tsk,
+		     struct livedump_param __user *param)
+{
+	int status = 0;
+	struct livedump_context *dump;
+	struct task_struct *leader;
+
+	read_lock(&tasklist_lock);
+	leader = tsk->group_leader;
+	BUG_ON(!leader);
+	get_task_struct(leader);
+	read_unlock(&tasklist_lock);
+
+	/* FIXME - better security check here ? */
+	if (!ptrace_check_attach(leader, 0)) {
+		status = -EPERM;
+		goto exit;
+	}
+
+	/*
+	 * Do not dump the task being ptraced, kernel thread,
+	 * task which is a clone created for live dumping,
+	 * or task which is exiting or handling fatal signal.
+	 */
+	task_lock(leader);
+	if ((leader->ptrace & PT_PTRACED) ||
+            (!leader->mm) ||
+            unlikely(leader->dump) ||
+            (leader->flags & PF_SIGNALED) ||
+            (leader->signal->flags & SIGNAL_GROUP_EXIT))
+                status = -EINVAL;
+	else if (leader->extra_flags & PFE_LIVEDUMP)
+		status = -EINPROGRESS;
+	else
+		leader->extra_flags |= PFE_LIVEDUMP;
+	task_unlock(leader);
+	if (status)
+		goto exit;
+
+	dump = kmalloc(sizeof *dump, GFP_KERNEL);
+	if (unlikely(!dump)) {
+		status = -ENOMEM;
+		goto exit_flag;
+	}
+
+	if (param) {
+		if (copy_from_user(&dump->param, param, sizeof(dump->param)))
+			status = -EFAULT;
+		else if (dump->param.sched_nice < -20 ||
+			 dump->param.sched_nice > 19 ||
+			 dump->param.io_prio < 0 ||
+			 dump->param.io_prio >= IOPRIO_BE_NR ||
+			 dump->param.oom_adj < OOM_DISABLE ||
+			 dump->param.oom_adj > OOM_ADJUST_MAX ||
+			 dump->param.core_limit > RLIM_INFINITY)
+			status = -EINVAL;
+		else if (((dump->param.sched_nice < 0) && !capable(CAP_SYS_NICE)) ||
+			 (dump->param.core_limit && !capable(CAP_SYS_RESOURCE)))
+			status = -EPERM;
+	} else {
+		/* Make it ultra-low priority by default. */
+		dump->param.sched_nice = 19;
+		dump->param.io_prio = 7;
+		dump->param.oom_adj = OOM_ADJUST_MAX;
+		/* Zero means using default (inherited) value. */
+		dump->param.core_limit = 0;
+	}
+
+	if (unlikely(status)) {
+		kfree(dump);
+		goto exit_flag;
+	}
+	kref_init(&dump->ref);
+	dump->origin = leader;
+	dump->leader = NULL;
+
+	/* We may start the dump. */
+	if (unlikely(current->group_leader == leader)) {
+		struct task_struct *dumper;
+
+		/*
+		 * Current is a member of the thread group lead by the
+		 * dumped task.  Since the task can't dump itself nor
+		 * it's leader, a special kernel thread (dumper) will do
+		 * it.
+		 */
+		init_completion(&dump->thread_exit);
+		init_completion(&dump->thread_exit);
+		dumper = kthread_run(livedump_dumper_thread, dump, "dump_%s",
+				     current->comm);
+		if (IS_ERR(dumper)) {
+			status = PTR_ERR(dumper);
+		} else {
+			sigset_t set;
+
+			livedump_block_signals(&set);
+			do {
+				/*
+				 * Wait for dumper thread. This wait
+				 * will be interrupted by the SIGKILL
+				 * sent by dumper.
+				 */
+				if (!wait_for_completion_interruptible(&dump->thread_exit))
+					break;
+				/*
+				 * Handling signal gives dumping stuff
+				 * a chance to do it's job.
+				 */
+				livedump_process_signal();
+			} while (1);
+			status = livedump_status(dump);
+			livedump_unblock_signals(&set);
+		}
+	} else
+		/*
+		 * When current and leader are not in the same
+		 * thread group, things are much easier...
+		 */
+		status = livedump_take(dump);
+exit_flag:
+	leader->extra_flags &= ~PFE_LIVEDUMP;
+exit:
+	put_task_struct(leader);
+	return status;
+}
+#endif /* CONFIG_LIVEDUMP */
+
 SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
 		unsigned long, data)
 {
@@ -1031,6 +1176,16 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
 		ret = PTR_ERR(child);
 		goto out;
 	}
+
+	if (request == PTRACE_LIVEDUMP) {
+#ifdef CONFIG_LIVEDUMP
+		ret = ptrace_livedump
+		  (child, (struct livedump_param __user *)data);
+#else
+		ret = -ENOSYS;
+#endif
+		goto out_put_task_struct;
+        }
 
 	if (request == PTRACE_ATTACH || request == PTRACE_SEIZE) {
 		ret = ptrace_attach(child, request, addr, data);
@@ -1067,7 +1222,7 @@ int generic_ptrace_peekdata(struct task_struct *tsk, unsigned long addr,
 	copied = access_process_vm(tsk, addr, &tmp, sizeof(tmp), 0);
 	if (copied != sizeof(tmp))
 		return -EIO;
-	return put_user(tmp, (unsigned long __user *)data);
+	return put_user(tmp, (__force unsigned long __user *)data);
 }
 
 int generic_ptrace_pokedata(struct task_struct *tsk, unsigned long addr,
@@ -1081,6 +1236,41 @@ int generic_ptrace_pokedata(struct task_struct *tsk, unsigned long addr,
 
 #if defined CONFIG_COMPAT
 #include <linux/compat.h>
+
+#ifdef CONFIG_LIVEDUMP
+static inline long
+copy_livedump_param_from_user32(struct livedump_param *to,
+				struct compat_livedump_param __user  *from)
+{
+	long err;
+
+	if (!access_ok (VERIFY_READ, from, sizeof(struct compat_livedump_param)))
+		return -EFAULT;
+
+	err = __get_user(to->sched_nice, &from->sched_nice);
+	err |= __get_user(to->io_prio, &from->io_prio);
+	err |= __get_user(to->oom_adj, &from->oom_adj);
+	err |= __get_user(to->core_limit, &from->core_limit);
+
+	return err;
+}
+
+long compat_ptrace_livedump(struct task_struct *tsk,
+			    struct compat_livedump_param __user *cparam)
+{
+	struct livedump_param __user tmp, *param;
+
+	if (cparam) {
+		param = compat_alloc_user_space(sizeof(struct livedump_param));
+		if (copy_livedump_param_from_user32(&tmp, cparam))
+			return -EFAULT;
+		if (copy_to_user(param, &tmp, sizeof(struct livedump_param)))
+			return -EFAULT;
+	} else
+		param = NULL;
+	return ptrace_livedump(tsk, param);
+}
+#endif	/* CONFIG_LIVEDUMP */
 
 int compat_ptrace_request(struct task_struct *child, compat_long_t request,
 			  compat_ulong_t addr, compat_ulong_t data)
@@ -1112,16 +1302,27 @@ int compat_ptrace_request(struct task_struct *child, compat_long_t request,
 
 	case PTRACE_GETSIGINFO:
 		ret = ptrace_getsiginfo(child, &siginfo);
-		if (!ret)
-			ret = copy_siginfo_to_user32(
-				(struct compat_siginfo __user *) datap,
-				&siginfo);
+		if (!ret) {
+			if (COMPAT_USE_NATIVE_SIGINFO)
+				ret = copy_siginfo_to_user(
+					(struct siginfo __user *) datap,
+					&siginfo);
+			else
+				ret = copy_siginfo_to_user32(
+					(struct compat_siginfo __user *) datap,
+					&siginfo);
+		}
 		break;
 
 	case PTRACE_SETSIGINFO:
 		memset(&siginfo, 0, sizeof siginfo);
-		if (copy_siginfo_from_user32(
-			    &siginfo, (struct compat_siginfo __user *) datap))
+		if (COMPAT_USE_NATIVE_SIGINFO)
+			ret = copy_from_user(&siginfo, datap, sizeof(siginfo));
+		else
+			ret = copy_siginfo_from_user32(
+				 &siginfo,
+				 (struct compat_siginfo __user *) datap);
+		if (ret)
 			ret = -EFAULT;
 		else
 			ret = ptrace_setsiginfo(child, &siginfo);
@@ -1161,7 +1362,7 @@ int compat_ptrace_request(struct task_struct *child, compat_long_t request,
 }
 
 asmlinkage long compat_sys_ptrace(compat_long_t request, compat_long_t pid,
-				  compat_long_t addr, compat_long_t data)
+				  compat_ulong_t addr, compat_ulong_t data)
 {
 	struct task_struct *child;
 	long ret;
@@ -1176,6 +1377,21 @@ asmlinkage long compat_sys_ptrace(compat_long_t request, compat_long_t pid,
 		ret = PTR_ERR(child);
 		goto out;
 	}
+
+	if (request == PTRACE_LIVEDUMP) {
+#ifdef CONFIG_LIVEDUMP
+		struct compat_livedump_param __user * datap;
+
+		datap = compat_ptr(data);
+		if (datap)
+			ret = compat_ptrace_livedump(child, datap);
+		else
+			ret = ptrace_livedump(child, NULL);
+#else
+		ret = -ENOSYS;
+#endif
+		goto out_put_task_struct;
+        }
 
 	if (request == PTRACE_ATTACH || request == PTRACE_SEIZE) {
 		ret = ptrace_attach(child, request, addr, data);

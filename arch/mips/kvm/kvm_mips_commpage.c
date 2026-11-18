@@ -22,16 +22,19 @@
 
 #include <linux/kvm_host.h>
 
+#include <asm/kvm_mips_te.h>
+
 #include "kvm_mips_comm.h"
 
 void kvm_mips_commpage_init(struct kvm_vcpu *vcpu)
 {
-	struct kvm_mips_commpage *page = vcpu->arch.kseg0_commpage;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct kvm_mips_commpage *page = vcpu_te->kseg0_commpage;
 	memset(page, 0, sizeof(struct kvm_mips_commpage));
 
 	/* Specific init values for fields */
-	vcpu->arch.cop0 = &page->cop0;
-	memset(vcpu->arch.cop0, 0, sizeof(struct mips_coproc));
+	vcpu_te->cop0 = &page->cop0;
+	memset(vcpu_te->cop0, 0, sizeof(struct mips_coproc));
 
 	return;
 }

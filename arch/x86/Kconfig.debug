@@ -5,6 +5,12 @@ config TRACE_IRQFLAGS_SUPPORT
 
 source "lib/Kconfig.debug"
 
+config HAVE_ARCH_MICROSTATE_ACCT
+	def_bool y
+
+config MICROSTATE_ACCT_SCHED_CLOCK_CLOCKSOURCE
+	def_bool y
+
 config STRICT_DEVMEM
 	bool "Filter access to /dev/mem"
 	---help---
@@ -84,7 +90,7 @@ config X86_PTDUMP
 config DEBUG_RODATA
 	bool "Write protect kernel read-only data structures"
 	default y
-	depends on DEBUG_KERNEL
+	depends on DEBUG_KERNEL && BROKEN
 	---help---
 	  Mark the kernel read-only data as write-protected in the pagetables,
 	  in order to catch accidental (and incorrect) writes to such const
@@ -102,7 +108,7 @@ config DEBUG_RODATA_TEST
 
 config DEBUG_SET_MODULE_RONX
 	bool "Set loadable kernel module data as NX and text as RO"
-	depends on MODULES
+	depends on MODULES && BROKEN
 	---help---
 	  This option helps catch unintended modifications to loadable
 	  kernel module's text and read-only data. It also prevents execution

@@ -68,6 +68,19 @@ source "fs/quota/Kconfig"
 source "fs/autofs4/Kconfig"
 source "fs/fuse/Kconfig"
 
+config FUMOUNT
+	bool "Forced Unmount support"
+	depends on !AUTOFS_FS && !AUTOFS4_FS
+	help
+	  This option gives the ability to (really) force unmount a file
+	  system. It closes all the open files, flushes their contents,
+	  releases file locks and tears down memory maps for the files.
+
+	  If AUTOFS_FS or AUTOFS4_FS is enabled FUMOUNT will not be
+	  supported since automount and fumount will not work together.
+
+	  If unsure, say N.
+
 config GENERIC_ACL
 	bool
 	select FS_POSIX_ACL
@@ -80,6 +93,16 @@ source "fs/cachefiles/Kconfig"
 endmenu
 
 if BLOCK
+config BLK_DEV_REMOVE
+	bool "Block Device Removal support"
+	depends on FUMOUNT
+	help
+	This option provides the ability to hot remove a block device such
+	as SCSI or MD. It utilizes forced umount to clean up the mounted
+	filesystem on top of the to be remove disk. It also cleans up any
+	open file handles against the device node.
+	If unsure, say N.
+
 menu "CD-ROM/DVD Filesystems"
 
 source "fs/isofs/Kconfig"
@@ -193,6 +216,7 @@ source "fs/hfsplus/Kconfig"
 source "fs/befs/Kconfig"
 source "fs/bfs/Kconfig"
 source "fs/efs/Kconfig"
+source "fs/yaffs2/Kconfig"
 source "fs/jffs2/Kconfig"
 # UBIFS File system configuration
 source "fs/ubifs/Kconfig"

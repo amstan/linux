@@ -15,6 +15,7 @@
  * binaries.
  */
 #include <linux/compiler.h>
+#include <linux/context_tracking.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
@@ -37,6 +38,10 @@
 #include <asm/uaccess.h>
 #include <asm/bootinfo.h>
 #include <asm/reg.h>
+
+#ifdef CONFIG_CPU_CAVIUM_OCTEON
+#include <asm/octeon/octeon.h>
+#endif
 
 /*
  * Called by kernel/ptrace.c when detaching..
@@ -129,13 +134,21 @@ int ptrace_getfpregs(struct task_struct *child, __u32 __user *data)
 			unsigned int vpflags = dvpe();
 			flags = read_c0_status();
 			__enable_fpu();
-			__asm__ __volatile__("cfc1\t%0,$0" : "=r" (tmp));
+			__asm__ __volatile__(
+				".set push\n"
+				"\t.set mips1\n"
+				"\tcfc1\t%0,$0\n"
+				"\t.set pop" : "=r" (tmp));
 			write_c0_status(flags);
 			evpe(vpflags);
 		} else {
 			flags = read_c0_status();
 			__enable_fpu();
-			__asm__ __volatile__("cfc1\t%0,$0" : "=r" (tmp));
+			__asm__ __volatile__(
+				".set push\n"
+				"\t.set mips1\n"
+				"\tcfc1\t%0,$0\n"
+				"\t.set pop" : "=r" (tmp));
 			write_c0_status(flags);
 		}
 	} else {
@@ -172,12 +185,14 @@ int ptrace_get_watch_regs(struct task_struct *child,
 			  struct pt_watch_regs __user *addr)
 {
 	enum pt_watch_style style;
-	int i;
+	unsigned int num_valid;
+	u16 watch_reg_masks[NUM_WATCH_REGS];
+	int i, rv;
 
-	if (!cpu_has_watch || current_cpu_data.watch_reg_use_cnt == 0)
+	if (!cpu_has_watch)
 		return -EIO;
 	if (!access_ok(VERIFY_WRITE, addr, sizeof(struct pt_watch_regs)))
-		return -EIO;
+		return -EFAULT;
 
 #ifdef CONFIG_32BIT
 	style = pt_watch_style_mips32;
@@ -187,41 +202,76 @@ int ptrace_get_watch_regs(struct task_struct *child,
 #define WATCH_STYLE mips64
 #endif
 
-	__put_user(style, &addr->style);
-	__put_user(current_cpu_data.watch_reg_use_cnt,
-		   &addr->WATCH_STYLE.num_valid);
-	for (i = 0; i < current_cpu_data.watch_reg_use_cnt; i++) {
-		__put_user(child->thread.watch.mips3264.watchlo[i],
-			   &addr->WATCH_STYLE.watchlo[i]);
-		__put_user(child->thread.watch.mips3264.watchhi[i] & 0xfff,
-			   &addr->WATCH_STYLE.watchhi[i]);
-		__put_user(current_cpu_data.watch_reg_masks[i],
-			   &addr->WATCH_STYLE.watch_masks[i]);
+	preempt_disable();
+	num_valid = current_cpu_data.watch_reg_use_cnt;
+	memcpy(watch_reg_masks, current_cpu_data.watch_reg_masks,
+	       sizeof(watch_reg_masks));
+	preempt_enable();
+
+	if (num_valid == 0)
+		return -EIO;
+
+	rv = __put_user(style, &addr->style);
+	if (rv)
+		goto out;
+	rv = __put_user(num_valid, &addr->WATCH_STYLE.num_valid);
+	if (rv)
+		goto out;
+	for (i = 0; i < num_valid; i++) {
+		rv = __put_user(child->thread.watch.mips3264.watchlo[i],
+				&addr->WATCH_STYLE.watchlo[i]);
+		if (rv)
+			goto out;
+		rv = __put_user(child->thread.watch.mips3264.watchhi[i] & 0xfff,
+				&addr->WATCH_STYLE.watchhi[i]);
+		if (rv)
+			goto out;
+		rv = __put_user(watch_reg_masks[i],
+				&addr->WATCH_STYLE.watch_masks[i]);
+		if (rv)
+			goto out;
 	}
 	for (; i < 8; i++) {
-		__put_user(0, &addr->WATCH_STYLE.watchlo[i]);
-		__put_user(0, &addr->WATCH_STYLE.watchhi[i]);
-		__put_user(0, &addr->WATCH_STYLE.watch_masks[i]);
+		rv = __put_user(0, &addr->WATCH_STYLE.watchlo[i]);
+		if (rv)
+			goto out;
+		rv = __put_user(0, &addr->WATCH_STYLE.watchhi[i]);
+		if (rv)
+			goto out;
+		rv = __put_user(0, &addr->WATCH_STYLE.watch_masks[i]);
+		if (rv)
+			goto out;
 	}
-
-	return 0;
+out:
+	return rv;
 }
 
 int ptrace_set_watch_regs(struct task_struct *child,
 			  struct pt_watch_regs __user *addr)
 {
-	int i;
+	int i, rv;
+	unsigned int num_valid;
 	int watch_active = 0;
 	unsigned long lt[NUM_WATCH_REGS];
 	u16 ht[NUM_WATCH_REGS];
 
-	if (!cpu_has_watch || current_cpu_data.watch_reg_use_cnt == 0)
+	if (!cpu_has_watch)
 		return -EIO;
 	if (!access_ok(VERIFY_READ, addr, sizeof(struct pt_watch_regs)))
+		return -EFAULT;
+
+	preempt_disable();
+	num_valid = current_cpu_data.watch_reg_use_cnt;
+	preempt_enable();
+
+	if (num_valid == 0)
 		return -EIO;
+
 	/* Check the values. */
-	for (i = 0; i < current_cpu_data.watch_reg_use_cnt; i++) {
-		__get_user(lt[i], &addr->WATCH_STYLE.watchlo[i]);
+	for (i = 0; i < num_valid; i++) {
+		rv = __get_user(lt[i], &addr->WATCH_STYLE.watchlo[i]);
+		if (rv)
+			return rv;
 #ifdef CONFIG_32BIT
 		if (lt[i] & __UA_LIMIT)
 			return -EINVAL;
@@ -234,12 +284,14 @@ int ptrace_set_watch_regs(struct task_struct *child,
 				return -EINVAL;
 		}
 #endif
-		__get_user(ht[i], &addr->WATCH_STYLE.watchhi[i]);
+		rv = __get_user(ht[i], &addr->WATCH_STYLE.watchhi[i]);
+		if (rv)
+			return rv;
 		if (ht[i] & ~0xff8)
 			return -EINVAL;
 	}
 	/* Install them. */
-	for (i = 0; i < current_cpu_data.watch_reg_use_cnt; i++) {
+	for (i = 0; i < num_valid; i++) {
 		if (lt[i] & 7)
 			watch_active = 1;
 		child->thread.watch.mips3264.watchlo[i] = lt[i];
@@ -267,6 +319,64 @@ long arch_ptrace(struct task_struct *child, long request,
 	/* when I and D space are separate, these will need to be fixed. */
 	case PTRACE_PEEKTEXT: /* read word at location addr. */
 	case PTRACE_PEEKDATA:
+		ret = -EIO;
+#if defined(CONFIG_CAVIUM_OCTEON_USER_IO_PER_PROCESS) || defined(CONFIG_CAVIUM_OCTEON_USER_IO)
+		/* check whether its a XKPHYS IO addr (we only allow the
+		   0x80xx.. alias) */
+		if (((unsigned long)addr >> 48) == 0x8001) {
+#ifdef CONFIG_CAVIUM_OCTEON_USER_IO_PER_PROCESS
+			struct task_struct *group_leader;
+
+			group_leader = child->group_leader;
+			if (!test_tsk_thread_flag(group_leader, TIF_XKPHYS_IO_EN))
+				break;
+#endif
+			ret = put_user(*(unsigned long *)addr,
+					(unsigned long __user *) data);
+			break;
+		}
+#endif /* !defined(CONFIG_CAVIUM_OCTEON_USER_IO_DISABLED) */
+#if defined(CONFIG_CAVIUM_OCTEON_USER_MEM_PER_PROCESS) || defined(CONFIG_CAVIUM_OCTEON_USER_MEM)
+		/* check whether its a XKPHYS MEM addr */
+		if (((unsigned long)addr >> 48) == 0x8000) {
+			unsigned long tmp;
+#ifdef CONFIG_CAVIUM_OCTEON_USER_MEM_PER_PROCESS
+			struct task_struct *group_leader;
+
+			group_leader = child->group_leader;
+			if (!test_tsk_thread_flag(group_leader, TIF_XKPHYS_MEM_EN))
+				break;
+#endif
+			ret = -EIO;
+			/* ensure that task is 64 bit */
+			if (test_tsk_thread_flag(child, TIF_32BIT_ADDR))
+				break;
+
+			/* extract phy addr from XKPHYS alias */
+			tmp = (unsigned long)addr - 0x8000000000000000ull;
+
+			/* check for boot-bus addr range */
+			if ((tmp >= 0x10000000) && (tmp < 0x20000000))
+				break;
+
+			/* this is for the dram_size comparison below */
+			if (current_cpu_type() == CPU_CAVIUM_OCTEON2) {
+				/* subtract 256MB hole for dram_size comparison */
+				if (tmp >= 0x20000000ull)
+					tmp -= 0x10000000ull;
+			} else {
+				if ((tmp >= 0x410000000ull) && (tmp < 0x420000000ull))
+					tmp -= 0x400000000ull;
+			}
+
+			/* verify that "addr" is within installed dram */
+			if (tmp <= ((octeon_bootinfo->dram_size << 20) - sizeof(tmp)))
+				ret = put_user(*(unsigned long *)addr, (unsigned long __user *) data);
+
+			break;
+		}
+#endif /* !defined(CONFIG_CAVIUM_OCTEON_USER_MEM_PER_PROCESS) */
+
 		ret = generic_ptrace_peekdata(child, addr, data);
 		break;
 
@@ -349,13 +459,21 @@ long arch_ptrace(struct task_struct *child, long request,
 				unsigned int vpflags = dvpe();
 				flags = read_c0_status();
 				__enable_fpu();
-				__asm__ __volatile__("cfc1\t%0,$0": "=r" (tmp));
+				__asm__ __volatile__(
+					".set push\n"
+					"\t.set mips1\n"
+					"\tcfc1\t%0,$0\n"
+					"\t.set pop" : "=r" (tmp));
 				write_c0_status(flags);
 				evpe(vpflags);
 			} else {
 				flags = read_c0_status();
 				__enable_fpu();
-				__asm__ __volatile__("cfc1\t%0,$0": "=r" (tmp));
+				__asm__ __volatile__(
+					".set push\n"
+					"\t.set mips1\n"
+					"\tcfc1\t%0,$0\n"
+					"\t.set pop" : "=r" (tmp));
 				write_c0_status(flags);
 			}
 #ifdef CONFIG_MIPS_MT_SMTC
@@ -535,6 +653,8 @@ static inline int audit_arch(void)
  */
 asmlinkage void syscall_trace_enter(struct pt_regs *regs)
 {
+	user_exit();
+
 	/* do the secure computing check first */
 	secure_computing_strict(regs->regs[2]);
 
@@ -571,6 +691,13 @@ out:
  */
 asmlinkage void syscall_trace_leave(struct pt_regs *regs)
 {
+        /*
+	 * We may come here right after calling schedule_user()
+	 * or do_notify_resume(), in which case we can be in RCU
+	 * user mode.
+	 */
+	user_exit();
+
 	audit_syscall_exit(regs);
 
 	if (!(current->ptrace & PT_PTRACED))
@@ -593,4 +720,6 @@ asmlinkage void syscall_trace_leave(struct pt_regs *regs)
 		send_sig(current->exit_code, current, 1);
 		current->exit_code = 0;
 	}
+
+	user_enter();
 }

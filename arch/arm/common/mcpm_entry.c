@@ -51,7 +51,8 @@ void mcpm_cpu_power_down(void)
 {
 	phys_reset_t phys_reset;
 
-	BUG_ON(!platform_ops);
+	if (WARN_ON_ONCE(!platform_ops || !platform_ops->power_down))
+		return;
 	BUG_ON(!irqs_disabled());
 
 	/*
@@ -89,11 +90,27 @@ void mcpm_cpu_power_down(void)
 	BUG();
 }
 
+int mcpm_cpu_power_down_finish(unsigned int cpu, unsigned int cluster)
+{
+	int ret;
+
+	if (WARN_ON_ONCE(!platform_ops || !platform_ops->power_down_finish))
+		return -EUNATCH;
+
+	ret = platform_ops->power_down_finish(cpu, cluster);
+	if (ret)
+		pr_warn("%s: cpu %u, cluster %u failed to power down (%d)\n",
+			__func__, cpu, cluster, ret);
+
+	return ret;
+}
+
 void mcpm_cpu_suspend(u64 expected_residency)
 {
 	phys_reset_t phys_reset;
 
-	BUG_ON(!platform_ops);
+	if (WARN_ON_ONCE(!platform_ops || !platform_ops->suspend))
+		return;
 	BUG_ON(!irqs_disabled());
 
 	/* Very similar to mcpm_cpu_power_down() */

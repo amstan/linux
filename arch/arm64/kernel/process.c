@@ -81,13 +81,8 @@ void soft_restart(unsigned long addr)
 void (*pm_power_off)(void);
 EXPORT_SYMBOL_GPL(pm_power_off);
 
-void (*arm_pm_restart)(char str, const char *cmd);
+void (*arm_pm_restart)(enum reboot_mode reboot_mode, const char *cmd);
 EXPORT_SYMBOL_GPL(arm_pm_restart);
-
-void arch_cpu_idle_prepare(void)
-{
-	local_fiq_enable();
-}
 
 /*
  * This is our default idle handler.
@@ -101,6 +96,13 @@ void arch_cpu_idle(void)
 	cpu_do_idle();
 	local_irq_enable();
 }
+
+#ifdef CONFIG_HOTPLUG_CPU
+void arch_cpu_idle_dead(void)
+{
+       cpu_die();
+}
+#endif
 
 void machine_shutdown(void)
 {
@@ -120,6 +122,7 @@ void machine_power_off(void)
 	machine_shutdown();
 	if (pm_power_off)
 		pm_power_off();
+	while (1);
 }
 
 void machine_restart(char *cmd)
@@ -128,11 +131,10 @@ void machine_restart(char *cmd)
 
 	/* Disable interrupts first */
 	local_irq_disable();
-	local_fiq_disable();
 
 	/* Now call the architecture specific reboot code. */
 	if (arm_pm_restart)
-		arm_pm_restart('h', cmd);
+		arm_pm_restart(reboot_mode, cmd);
 
 	/*
 	 * Whoops - the architecture was unable to reboot.
@@ -220,7 +222,7 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 	if (likely(!(p->flags & PF_KTHREAD))) {
 		*childregs = *current_pt_regs();
 		childregs->regs[0] = 0;
-		if (is_compat_thread(task_thread_info(p))) {
+		if (is_a32_compat_thread(task_thread_info(p))) {
 			if (stack_start)
 				childregs->compat_sp = stack_start;
 		} else {
@@ -261,12 +263,12 @@ static void tls_thread_switch(struct task_struct *next)
 {
 	unsigned long tpidr, tpidrro;
 
-	if (!is_compat_task()) {
+	if (!is_a32_compat_task()) {
 		asm("mrs %0, tpidr_el0" : "=r" (tpidr));
 		current->thread.tp_value = tpidr;
 	}
 
-	if (is_compat_thread(task_thread_info(next))) {
+	if (is_a32_compat_thread(task_thread_info(next))) {
 		tpidr = 0;
 		tpidrro = next->thread.tp_value;
 	} else {

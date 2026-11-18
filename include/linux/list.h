@@ -112,6 +112,19 @@ extern void __list_del_entry(struct list_head *entry);
 extern void list_del(struct list_head *entry);
 #endif
 
+extern void __pax_list_add(struct list_head *new,
+			      struct list_head *prev,
+			      struct list_head *next);
+static inline void pax_list_add(struct list_head *new, struct list_head *head)
+{
+	__pax_list_add(new, head, head->next);
+}
+static inline void pax_list_add_tail(struct list_head *new, struct list_head *head)
+{
+	__pax_list_add(new, head->prev, head);
+}
+extern void pax_list_del(struct list_head *entry);
+
 /**
  * list_replace - replace old entry by new one
  * @old : the element to be replaced
@@ -144,6 +157,8 @@ static inline void list_del_init(struct list_head *entry)
 	__list_del_entry(entry);
 	INIT_LIST_HEAD(entry);
 }
+
+extern void pax_list_del_init(struct list_head *entry);
 
 /**
  * list_move - delete from one list and add as another's head
@@ -371,6 +386,17 @@ static inline void list_splice_tail_init(struct list_head *list,
  */
 #define list_first_entry_or_null(ptr, type, member) \
 	(!list_empty(ptr) ? list_first_entry(ptr, type, member) : NULL)
+
+/**
+ * list_last_entry - get the last element from a list
+ * @ptr:	the list head to take the element from.
+ * @type:	the type of the struct this is embedded in.
+ * @member:	the name of the list_struct within the struct.
+ *
+ * Note, that list is expected to be not empty.
+ */
+#define list_last_entry(ptr, type, member) \
+	list_entry((ptr)->prev, type, member)
 
 /**
  * list_next_entry - get the next element in list

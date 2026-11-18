@@ -174,16 +174,6 @@ void arch_cpu_idle(void)
 		default_idle();
 }
 
-static char reboot_mode = 'h';
-
-int __init reboot_setup(char *str)
-{
-	reboot_mode = str[0];
-	return 1;
-}
-
-__setup("reboot=", reboot_setup);
-
 /*
  * Called by kexec, immediately prior to machine_kexec().
  *
@@ -223,6 +213,7 @@ void machine_power_off(void)
 
 	if (pm_power_off)
 		pm_power_off();
+	BUG();
 }
 
 /*
@@ -236,7 +227,7 @@ void machine_power_off(void)
  * executing pre-reset code, and using RAM that the primary CPU's code wishes
  * to use. Implementing such co-ordination would be essentially impossible.
  */
-void machine_restart(char *cmd)
+__noreturn void machine_restart(char *cmd)
 {
 	smp_send_stop();
 
@@ -429,13 +420,39 @@ unsigned long get_wchan(struct task_struct *p)
 	return 0;
 }
 
+#ifndef CONFIG_PAX_ASLR
 unsigned long arch_randomize_brk(struct mm_struct *mm)
 {
 	unsigned long range_end = mm->brk + 0x02000000;
 	return randomize_range(mm->brk, range_end, 0) ? : mm->brk;
 }
+#endif
 
 #ifdef CONFIG_MMU
+/*
+ * CONFIG_SPLIT_PTLOCK_CPUS results in a page->ptl lock.  If the lock is not
+ * initialized by pgtable_page_ctor() then a coredump of the vector page will
+ * fail.
+ */
+static int __init vectors_user_mapping_init_page(void)
+{
+	struct page *page;
+	unsigned long addr = 0xffff0000;
+	pgd_t *pgd;
+	pud_t *pud;
+	pmd_t *pmd;
+
+	pgd = pgd_offset_k(addr);
+	pud = pud_offset(pgd, addr);
+	pmd = pmd_offset(pud, addr);
+	page = pmd_page(*(pmd));
+
+	pgtable_page_ctor(page);
+
+	return 0;
+}
+late_initcall(vectors_user_mapping_init_page);
+
 #ifdef CONFIG_KUSER_HELPERS
 /*
  * The vectors page is always readable from user space for the
@@ -450,7 +467,7 @@ static struct vm_area_struct gate_vma = {
 
 static int __init gate_vma_init(void)
 {
-	gate_vma.vm_page_prot = PAGE_READONLY_EXEC;
+	gate_vma.vm_page_prot = vm_get_page_prot(gate_vma.vm_flags);
 	return 0;
 }
 arch_initcall(gate_vma_init);
@@ -476,41 +493,16 @@ int in_gate_area_no_mm(unsigned long addr)
 
 const char *arch_vma_name(struct vm_area_struct *vma)
 {
-	return is_gate_vma(vma) ? "[vectors]" :
-		(vma->vm_mm && vma->vm_start == vma->vm_mm->context.sigpage) ?
-		 "[sigpage]" : NULL;
+	return is_gate_vma(vma) ? "[vectors]" : NULL;
 }
-
-static struct page *signal_page;
-extern struct page *get_signal_page(void);
 
 int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 {
 	struct mm_struct *mm = current->mm;
-	unsigned long addr;
-	int ret;
-
-	if (!signal_page)
-		signal_page = get_signal_page();
-	if (!signal_page)
-		return -ENOMEM;
 
 	down_write(&mm->mmap_sem);
-	addr = get_unmapped_area(NULL, 0, PAGE_SIZE, 0, 0);
-	if (IS_ERR_VALUE(addr)) {
-		ret = addr;
-		goto up_fail;
-	}
-
-	ret = install_special_mapping(mm, addr, PAGE_SIZE,
-		VM_READ | VM_EXEC | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC,
-		&signal_page);
-
-	if (ret == 0)
-		mm->context.sigpage = addr;
-
- up_fail:
+	mm->context.sigpage = (PAGE_OFFSET + (get_random_int() % 0x3FFEFFE0)) & 0xFFFFFFFC;
 	up_write(&mm->mmap_sem);
-	return ret;
+	return 0;
 }
 #endif

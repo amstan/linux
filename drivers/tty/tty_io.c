@@ -95,6 +95,7 @@
 #include <linux/seq_file.h>
 #include <linux/serial.h>
 #include <linux/ratelimit.h>
+#include <linux/pid_namespace.h>
 
 #include <linux/uaccess.h>
 
@@ -503,8 +504,10 @@ static const struct file_operations hung_up_tty_fops = {
 	.release	= tty_release,
 };
 
+/*
+ * redirect is in the pid namespace, but we use a global lock.
+ */
 static DEFINE_SPINLOCK(redirect_lock);
-static struct file *redirect;
 
 /**
  *	tty_wakeup	-	request more data
@@ -615,15 +618,16 @@ static void __tty_hangup(struct tty_struct *tty, int exit_session)
 	struct tty_file_private *priv;
 	int    closecount = 0, n;
 	int refs;
+	struct file *redir = NULL;
 
 	if (!tty)
 		return;
 
-
 	spin_lock(&redirect_lock);
-	if (redirect && file_tty(redirect) == tty) {
-		f = redirect;
-		redirect = NULL;
+	redir = task_active_pid_ns(current)->redirect;
+	if (redir && file_tty(redir) == tty) {
+		f = redir;
+		task_active_pid_ns(current)->redirect = NULL;
 	}
 	spin_unlock(&redirect_lock);
 
@@ -1219,10 +1223,12 @@ ssize_t redirected_tty_write(struct file *file, const char __user *buf,
 						size_t count, loff_t *ppos)
 {
 	struct file *p = NULL;
+	struct file *redir;
 
 	spin_lock(&redirect_lock);
-	if (redirect)
-		p = get_file(redirect);
+	redir = task_active_pid_ns(current)->redirect;
+	if (redir)
+		p = get_file(redir);
 	spin_unlock(&redirect_lock);
 
 	if (p) {
@@ -2331,19 +2337,19 @@ static int tioccons(struct file *file)
 	if (file->f_op->write == redirected_tty_write) {
 		struct file *f;
 		spin_lock(&redirect_lock);
-		f = redirect;
-		redirect = NULL;
+		f = task_active_pid_ns(current)->redirect;
+		task_active_pid_ns(current)->redirect = NULL;
 		spin_unlock(&redirect_lock);
 		if (f)
 			fput(f);
 		return 0;
 	}
 	spin_lock(&redirect_lock);
-	if (redirect) {
+	if (task_active_pid_ns(current)->redirect) {
 		spin_unlock(&redirect_lock);
 		return -EBUSY;
 	}
-	redirect = get_file(file);
+	task_active_pid_ns(current)->redirect = get_file(file);
 	spin_unlock(&redirect_lock);
 	return 0;
 }
@@ -3473,7 +3479,7 @@ EXPORT_SYMBOL_GPL(get_current_tty);
 
 void tty_default_fops(struct file_operations *fops)
 {
-	*fops = tty_fops;
+	memcpy((void *)fops, &tty_fops, sizeof(tty_fops));
 }
 
 /*

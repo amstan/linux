@@ -149,13 +149,14 @@ EXPORT_SYMBOL_GPL(rcu_sched_lock_map);
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 
-int debug_lockdep_rcu_enabled(void)
+int notrace debug_lockdep_rcu_enabled(void)
 {
 	return rcu_scheduler_active && debug_locks &&
 	       current->lockdep_recursion == 0;
 }
 EXPORT_SYMBOL_GPL(debug_lockdep_rcu_enabled);
 
+#ifndef CONFIG_PREEMPT_RT_FULL
 /**
  * rcu_read_lock_bh_held() - might we be in RCU-bh read-side critical section?
  *
@@ -182,6 +183,7 @@ int rcu_read_lock_bh_held(void)
 	return in_softirq() || irqs_disabled();
 }
 EXPORT_SYMBOL_GPL(rcu_read_lock_bh_held);
+#endif
 
 #endif /* #ifdef CONFIG_DEBUG_LOCK_ALLOC */
 
@@ -439,10 +441,10 @@ int rcu_jiffies_till_stall_check(void)
 	 * for CONFIG_RCU_CPU_STALL_TIMEOUT.
 	 */
 	if (till_stall_check < 3) {
-		ACCESS_ONCE(rcu_cpu_stall_timeout) = 3;
+		ACCESS_ONCE_RW(rcu_cpu_stall_timeout) = 3;
 		till_stall_check = 3;
 	} else if (till_stall_check > 300) {
-		ACCESS_ONCE(rcu_cpu_stall_timeout) = 300;
+		ACCESS_ONCE_RW(rcu_cpu_stall_timeout) = 300;
 		till_stall_check = 300;
 	}
 	return till_stall_check * HZ + RCU_STALL_DELAY_DELTA;

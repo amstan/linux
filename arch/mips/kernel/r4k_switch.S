@@ -28,6 +28,7 @@
  */
 #define ST_OFF (_THREAD_SIZE - 32 - PT_SIZE + PT_STATUS)
 
+#ifndef USE_ALTERNATE_RESUME_IMPL
 /*
  * FPU context is saved iff the process has used it's FPU in the current
  * time slice as indicated by _TIF_USEDFPU.  In any case, the CU1 bit for user
@@ -112,6 +113,8 @@
 	move	v0, a0
 	jr	ra
 	END(resume)
+
+#endif /* USE_ALTERNATE_RESUME_IMPL */
 
 /*
  * Save a thread's fp context.

@@ -18,6 +18,7 @@
 #include <linux/proc_ns.h>
 #include <linux/reboot.h>
 #include <linux/export.h>
+#include <linux/file.h>
 
 struct pid_cache {
 	int nr_ids;
@@ -136,6 +137,8 @@ static void destroy_pid_namespace(struct pid_namespace *ns)
 {
 	int i;
 
+	if (ns->redirect)
+		fput(ns->redirect);
 	proc_free_inum(ns->proc_inum);
 	for (i = 0; i < PIDMAP_ENTRIES; i++)
 		kfree(ns->pidmap[i].page);
@@ -247,7 +250,7 @@ static int pid_ns_ctl_handler(struct ctl_table *table, int write,
 		void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct pid_namespace *pid_ns = task_active_pid_ns(current);
-	struct ctl_table tmp = *table;
+	ctl_table_no_const tmp = *table;
 
 	if (write && !ns_capable(pid_ns->user_ns, CAP_SYS_ADMIN))
 		return -EPERM;

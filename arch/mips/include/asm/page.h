@@ -45,6 +45,8 @@
 #define HUGETLB_PAGE_ORDER	({BUILD_BUG(); 0; })
 #endif /* CONFIG_MIPS_HUGE_TLB_SUPPORT */
 
+#ifndef __ASSEMBLY__
+
 #include <linux/pfn.h>
 
 extern void build_clear_page(void);
@@ -95,7 +97,7 @@ extern void copy_user_highpage(struct page *to, struct page *from,
   #ifdef CONFIG_CPU_MIPS32
     typedef struct { unsigned long pte_low, pte_high; } pte_t;
     #define pte_val(x)	  ((x).pte_low | ((unsigned long long)(x).pte_high << 32))
-    #define __pte(x)	  ({ pte_t __pte = {(x), ((unsigned long long)(x)) >> 32}; __pte; })
+    #define __pte(x)	  ({ pte_t __pte = {(x), (x) >> 32}; __pte; })
   #else
      typedef struct { unsigned long long pte; } pte_t;
      #define pte_val(x) ((x).pte)
@@ -140,11 +142,8 @@ typedef struct { unsigned long pgprot; } pgprot_t;
  * __pa()/__va() should be used only during mem init.
  */
 #ifdef CONFIG_64BIT
-#define __pa(x)								\
-({									\
-    unsigned long __x = (unsigned long)(x);				\
-    __x < CKSEG0 ? XPHYSADDR(__x) : CPHYSADDR(__x);			\
-})
+unsigned long __phys_addr(unsigned long x);
+#define __pa(x)	__phys_addr((unsigned long)x)
 #else
 #define __pa(x)								\
     ((unsigned long)(x) - PAGE_OFFSET + PHYS_OFFSET)
@@ -164,8 +163,13 @@ typedef struct { unsigned long pgprot; } pgprot_t;
  * until GCC 3.x has been retired before we can apply
  * https://patchwork.linux-mips.org/patch/1541/
  */
-
-#define __pa_symbol(x)	__pa(RELOC_HIDE((unsigned long)(x), 0))
+# ifdef CONFIG_MAPPED_KERNEL
+extern unsigned long phys_to_kernel_offset;
+#  define __pa_symbol(x)	(RELOC_HIDE((unsigned long)(x), 0) - phys_to_kernel_offset)
+# else
+#  define __pa_symbol(x)	__pa(RELOC_HIDE((unsigned long)(x), 0))
+# endif
+#endif /*__ASSEMBLY__*/
 
 #define pfn_to_kaddr(pfn)	__va((pfn) << PAGE_SHIFT)
 
@@ -194,7 +198,7 @@ static inline int pfn_valid(unsigned long pfn)
 		    : 0);						\
 })
 
-#endif
+#endif /*defined(CONFIG_NEED_MULTIPLE_NODES)*/
 
 #define virt_to_page(kaddr)	pfn_to_page(PFN_DOWN(virt_to_phys(kaddr)))
 

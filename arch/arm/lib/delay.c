@@ -28,7 +28,7 @@
 /*
  * Default to the loop-based delay implementation.
  */
-struct arm_delay_ops arm_delay_ops = {
+struct arm_delay_ops arm_delay_ops __read_only = {
 	.delay		= __loop_delay,
 	.const_udelay	= __loop_const_udelay,
 	.udelay		= __loop_udelay,
@@ -86,7 +86,7 @@ void __init register_current_timer_delay(const struct delay_timer *timer)
 	}
 }
 
-unsigned long __cpuinit calibrate_delay_is_known(void)
+unsigned long calibrate_delay_is_known(void)
 {
 	delay_calibrated = true;
 	return lpj_fine;

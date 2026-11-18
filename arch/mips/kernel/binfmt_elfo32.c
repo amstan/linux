@@ -56,6 +56,13 @@ typedef elf_fpreg_t elf_fpregset_t[ELF_NFPREG];
 #undef ELF_ET_DYN_BASE
 #define ELF_ET_DYN_BASE		(TASK32_SIZE / 3 * 2)
 
+#ifdef CONFIG_PAX_ASLR
+#define PAX_ELF_ET_DYN_BASE	(TASK_IS_32BIT_ADDR ? 0x00400000UL : 0x00400000UL)
+
+#define PAX_DELTA_MMAP_LEN	(TASK_IS_32BIT_ADDR ? 27-PAGE_SHIFT : 36-PAGE_SHIFT)
+#define PAX_DELTA_STACK_LEN	(TASK_IS_32BIT_ADDR ? 27-PAGE_SHIFT : 36-PAGE_SHIFT)
+#endif
+
 #include <asm/processor.h>
 
 /* These MUST be defined before elf.h gets included */
@@ -124,6 +131,7 @@ jiffies_to_compat_timeval(unsigned long jiffies, struct compat_timeval *value)
 	value->tv_sec = div_u64_rem(nsec, NSEC_PER_SEC, &rem);
 	value->tv_usec = rem / NSEC_PER_USEC;
 }
+
 
 void elf32_core_copy_regs(elf_gregset_t grp, struct pt_regs *regs)
 {

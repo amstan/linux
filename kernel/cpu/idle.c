@@ -93,12 +93,12 @@ static void cpu_idle_loop(void)
 				cpu_idle_poll();
 			} else {
 				if (!current_clr_polling_and_test()) {
-					stop_critical_timings();
 					rcu_idle_enter();
+					stop_critical_timings();
 					arch_cpu_idle();
 					WARN_ON_ONCE(irqs_disabled());
-					rcu_idle_exit();
 					start_critical_timings();
+					rcu_idle_exit();
 				} else {
 					local_irq_enable();
 				}

@@ -10,6 +10,7 @@
 #include <linux/ftrace.h>
 #include <linux/delay.h>
 #include <linux/export.h>
+#include <linux/msa.h>
 
 #include <asm/apic.h>
 #include <asm/io_apic.h>
@@ -18,7 +19,7 @@
 #include <asm/mce.h>
 #include <asm/hw_irq.h>
 
-atomic_t irq_err_count;
+atomic_unchecked_t irq_err_count;
 
 /* Function pointer for generic interrupt vector handling */
 void (*x86_platform_ipi_callback)(void) = NULL;
@@ -122,9 +123,9 @@ int arch_show_interrupts(struct seq_file *p, int prec)
 		seq_printf(p, "%10u ", per_cpu(mce_poll_count, j));
 	seq_printf(p, "  Machine check polls\n");
 #endif
-	seq_printf(p, "%*s: %10u\n", prec, "ERR", atomic_read(&irq_err_count));
+	seq_printf(p, "%*s: %10u\n", prec, "ERR", atomic_read_unchecked(&irq_err_count));
 #if defined(CONFIG_X86_IO_APIC)
-	seq_printf(p, "%*s: %10u\n", prec, "MIS", atomic_read(&irq_mis_count));
+	seq_printf(p, "%*s: %10u\n", prec, "MIS", atomic_read_unchecked(&irq_mis_count));
 #endif
 	return 0;
 }
@@ -164,7 +165,7 @@ u64 arch_irq_stat_cpu(unsigned int cpu)
 
 u64 arch_irq_stat(void)
 {
-	u64 sum = atomic_read(&irq_err_count);
+	u64 sum = atomic_read_unchecked(&irq_err_count);
 	return sum;
 }
 
@@ -187,6 +188,8 @@ unsigned int __irq_entry do_IRQ(struct pt_regs *regs)
 
 	irq = __this_cpu_read(vector_irq[vector]);
 
+	msa_start_irq(irq);
+
 	if (!handle_irq(irq, regs)) {
 		ack_APIC_irq();
 
@@ -195,7 +198,7 @@ unsigned int __irq_entry do_IRQ(struct pt_regs *regs)
 				__func__, smp_processor_id(), vector, irq);
 	}
 
-	irq_exit();
+	msa_irq_exit(irq, regs->cs != __KERNEL_CS);
 
 	set_irq_regs(old_regs);
 	return 1;
@@ -211,15 +214,15 @@ void smp_x86_platform_ipi(struct pt_regs *regs)
 	ack_APIC_irq();
 
 	irq_enter();
-
 	exit_idle();
+	msa_start_irq(X86_PLATFORM_IPI_VECTOR);
 
 	inc_irq_stat(x86_platform_ipis);
 
 	if (x86_platform_ipi_callback)
 		x86_platform_ipi_callback();
 
-	irq_exit();
+	msa_irq_exit(X86_PLATFORM_IPI_VECTOR, regs->cs != __KERNEL_CS);
 
 	set_irq_regs(old_regs);
 }

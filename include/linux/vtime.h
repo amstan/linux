@@ -4,11 +4,18 @@
 struct task_struct;
 
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING
-extern void vtime_task_switch(struct task_struct *prev);
-extern void vtime_account_system(struct task_struct *tsk);
 extern void vtime_account_idle(struct task_struct *tsk);
 extern void vtime_account_user(struct task_struct *tsk);
+#ifdef CONFIG_MICROSTATE_ACCT
+static inline void vtime_task_switch(struct task_struct *prev) { }
+static inline void vtime_account_irq_enter(struct task_struct *tsk) { }
+static inline void vtime_account_system(struct task_struct *tsk) { }
+static inline bool vtime_accounting_enabled(void) { return false; }
+#else
+extern void vtime_task_switch(struct task_struct *prev);
 extern void vtime_account_irq_enter(struct task_struct *tsk);
+extern void vtime_account_system(struct task_struct *tsk);
+#endif
 
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 static inline bool vtime_accounting_enabled(void) { return true; }

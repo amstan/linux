@@ -38,7 +38,7 @@ static inline int ioremap_pmd_range(pud_t *pud, unsigned long addr,
 	unsigned long next;
 
 	phys_addr -= addr;
-	pmd = pmd_alloc(&init_mm, pud, addr);
+	pmd = pmd_alloc_kernel(&init_mm, pud, addr);
 	if (!pmd)
 		return -ENOMEM;
 	do {
@@ -56,7 +56,7 @@ static inline int ioremap_pud_range(pgd_t *pgd, unsigned long addr,
 	unsigned long next;
 
 	phys_addr -= addr;
-	pud = pud_alloc(&init_mm, pgd, addr);
+	pud = pud_alloc_kernel(&init_mm, pgd, addr);
 	if (!pud)
 		return -ENOMEM;
 	do {
@@ -74,6 +74,9 @@ int ioremap_page_range(unsigned long addr,
 	unsigned long start;
 	unsigned long next;
 	int err;
+#ifdef CONFIG_PAX_SEC_PGD	
+	pgd_t *pgd_pax = pgd_offset_pax(addr);
+#endif
 
 	BUG_ON(addr >= end);
 
@@ -85,7 +88,12 @@ int ioremap_page_range(unsigned long addr,
 		err = ioremap_pud_range(pgd, addr, next, phys_addr+addr, prot);
 		if (err)
 			break;
+#ifdef CONFIG_PAX_SEC_PGD	
+		*pgd_pax = *pgd;
+	} while (pgd++, pgd_pax++, addr = next, addr != end);
+#else
 	} while (pgd++, addr = next, addr != end);
+#endif
 
 	flush_cache_vmap(start, end);
 

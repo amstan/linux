@@ -46,7 +46,7 @@
 struct rcu_ctrlblk;
 static void invoke_rcu_callbacks(void);
 static void __rcu_process_callbacks(struct rcu_ctrlblk *rcp);
-static void rcu_process_callbacks(struct softirq_action *unused);
+static void rcu_process_callbacks(void);
 static void __call_rcu(struct rcu_head *head,
 		       void (*func)(struct rcu_head *rcu),
 		       struct rcu_ctrlblk *rcp);
@@ -312,7 +312,7 @@ static void __rcu_process_callbacks(struct rcu_ctrlblk *rcp)
 				      rcu_is_callbacks_kthread()));
 }
 
-static void rcu_process_callbacks(struct softirq_action *unused)
+static void rcu_process_callbacks(void)
 {
 	__rcu_process_callbacks(&rcu_sched_ctrlblk);
 	__rcu_process_callbacks(&rcu_bh_ctrlblk);
@@ -373,6 +373,7 @@ void call_rcu_sched(struct rcu_head *head, void (*func)(struct rcu_head *rcu))
 }
 EXPORT_SYMBOL_GPL(call_rcu_sched);
 
+#ifndef CONFIG_PREEMPT_RT_FULL
 /*
  * Post an RCU bottom-half callback to be invoked after any subsequent
  * quiescent state.
@@ -382,3 +383,4 @@ void call_rcu_bh(struct rcu_head *head, void (*func)(struct rcu_head *rcu))
 	__call_rcu(head, func, &rcu_bh_ctrlblk);
 }
 EXPORT_SYMBOL_GPL(call_rcu_bh);
+#endif

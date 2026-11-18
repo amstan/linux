@@ -31,7 +31,8 @@ struct attribute {
 	struct lock_class_key	*key;
 	struct lock_class_key	skey;
 #endif
-};
+} __do_const;
+typedef struct attribute __no_const attribute_no_const;
 
 /**
  *	sysfs_attr_init - initialize a dynamically allocated sysfs attribute
@@ -59,8 +60,8 @@ struct attribute_group {
 	umode_t			(*is_visible)(struct kobject *,
 					      struct attribute *, int);
 	struct attribute	**attrs;
-};
-
+} __do_const;
+typedef struct attribute_group __no_const attribute_group_no_const;
 
 
 /**
@@ -92,6 +93,15 @@ struct attribute_group {
 #define __ATTR_IGNORE_LOCKDEP	__ATTR
 #endif
 
+#define ATTRIBUTE_GROUPS(name)					\
+static const struct attribute_group name##_group = {		\
+	.attrs = name##_attrs,					\
+};								\
+static const struct attribute_group *name##_groups[] = {	\
+	&name##_group,						\
+	NULL,							\
+}
+
 #define attr_name(_attr) (_attr).attr.name
 
 struct file;
@@ -107,7 +117,8 @@ struct bin_attribute {
 			 char *, loff_t, size_t);
 	int (*mmap)(struct file *, struct kobject *, struct bin_attribute *attr,
 		    struct vm_area_struct *vma);
-};
+} __do_const;
+typedef struct bin_attribute __no_const bin_attribute_no_const;
 
 /**
  *	sysfs_bin_attr_init - initialize a dynamically allocated bin_attribute
@@ -169,10 +180,14 @@ void sysfs_delete_link(struct kobject *dir, struct kobject *targ,
 
 int __must_check sysfs_create_group(struct kobject *kobj,
 				    const struct attribute_group *grp);
+int __must_check sysfs_create_groups(struct kobject *kobj,
+				     const struct attribute_group **groups);
 int sysfs_update_group(struct kobject *kobj,
 		       const struct attribute_group *grp);
 void sysfs_remove_group(struct kobject *kobj,
 			const struct attribute_group *grp);
+void sysfs_remove_groups(struct kobject *kobj,
+			 const struct attribute_group **groups);
 int sysfs_add_file_to_group(struct kobject *kobj,
 			const struct attribute *attr, const char *group);
 void sysfs_remove_file_from_group(struct kobject *kobj,

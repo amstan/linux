@@ -25,7 +25,7 @@
 
 #define OCTEON_SPI_MAX_BYTES 9
 
-#define OCTEON_SPI_MAX_CLOCK_HZ 16000000
+#define OCTEON_SPI_MAX_CLOCK_HZ		16000000
 
 struct octeon_spi {
 	struct spi_master *my_master;
@@ -69,6 +69,8 @@ static int octeon_spi_do_transfer(struct octeon_spi *p,
 	u8 *rx_buf;
 	int len;
 	int i;
+	u32 max_freq;
+	struct device_node *np = p->my_master->dev.of_node;
 
 	struct octeon_spi_setup *msg_setup = spi_get_ctldata(msg->spi);
 
@@ -83,8 +85,14 @@ static int octeon_spi_do_transfer(struct octeon_spi *p,
 	if (xfer->bits_per_word)
 		bits_per_word = xfer->bits_per_word;
 
-	if (speed_hz > OCTEON_SPI_MAX_CLOCK_HZ)
-		speed_hz = OCTEON_SPI_MAX_CLOCK_HZ;
+	if (!of_property_read_u32(np, "spi-max-frequency", &max_freq)) {
+		if (speed_hz > max_freq)
+			speed_hz = max_freq;
+	}
+	else {
+		if (speed_hz > OCTEON_SPI_MAX_CLOCK_HZ)
+			speed_hz = OCTEON_SPI_MAX_CLOCK_HZ;
+	}
 
 	clkdiv = octeon_get_io_clock_rate() / (2 * speed_hz);
 

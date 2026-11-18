@@ -11,13 +11,13 @@ config HAVE_PATA_PLATFORM
 	  to update the PATA_PLATFORM entry.
 
 menuconfig ATA
-	tristate "Serial ATA and Parallel ATA drivers"
+	tristate "Serial ATA and Parallel ATA drivers (libata)"
 	depends on HAS_IOMEM
 	depends on BLOCK
 	depends on !(M32R || M68K || S390) || BROKEN
 	select SCSI
 	---help---
-	  If you want to use a ATA hard disk, ATA tape drive, ATA CD-ROM or
+	  If you want to use an ATA hard disk, ATA tape drive, ATA CD-ROM or
 	  any other ATA device under Linux, say Y and make sure that you know
 	  the name of your ATA host adapter (the card inside your computer
 	  that "speaks" the ATA protocol, also called ATA controller),
@@ -97,6 +97,45 @@ config SATA_AHCI_PLATFORM
 
 	  If unsure, say N.
 
+config SATA_PHY
+	bool "SATA PHY Framework"
+	default n
+	help
+	  This option enables the SATA PHY utility framework APIs.
+	  The framework acts as an interface between the SATA device
+	  and the PHY device. The SATA PHY device registers itself
+	  with the framework through the APIs provided and the SATA
+	  device finds and requests for an appropriate PHY device.
+
+config SATA_EXYNOS
+        bool "Exynos SATA AHCI support"
+        select I2C
+        select HAVE_S3C2410_I2C
+        select I2C_S3C2410
+        select SATA_PHY
+        help
+          This option enables support for Exynos AHCI Serial ATA
+          controllers.
+
+          If unsure, say N.
+
+config AHCI_IMX
+	tristate "Freescale i.MX AHCI SATA support"
+	depends on SATA_AHCI_PLATFORM && MFD_SYSCON
+	help
+	  This option enables support for the Freescale i.MX SoC's
+	  onboard AHCI SATA.
+
+	  If unsure, say N.
+
+config AHCI_ST
+	tristate "ST AHCI SATA support"
+	depends on ARCH_STI
+	help
+	  This option enables support for ST AHCI SATA controller.
+
+	  If unsure, say N.
+
 config SATA_FSL
 	tristate "Freescale 3.0Gbps SATA support"
 	depends on FSL_SOC
@@ -146,6 +185,11 @@ config ATA_SFF
 
 	  If unsure, say Y.
 
+config SATA_OCTEON
+	tristate
+	depends on SATA_AHCI_PLATFORM && CAVIUM_OCTEON_SOC
+	default y
+
 if ATA_SFF
 
 comment "SFF controllers with custom DMA interface"
@@ -160,7 +204,7 @@ config PDC_ADMA
 
 config PATA_OCTEON_CF
 	tristate "OCTEON Boot Bus Compact Flash support"
-	depends on CPU_CAVIUM_OCTEON
+	depends on CAVIUM_OCTEON_SOC
 	help
 	  This option enables a polled compact flash driver for use with
 	  compact flash cards attached to the OCTEON boot bus.
@@ -657,7 +701,7 @@ config PATA_RDC
 
 config PATA_SC1200
 	tristate "SC1200 PATA support"
-	depends on PCI
+	depends on PCI && (X86_32 || COMPILE_TEST)
 	help
 	  This option enables support for the NatSemi/AMD SC1200 SoC
 	  companion chip used with the Geode processor family.

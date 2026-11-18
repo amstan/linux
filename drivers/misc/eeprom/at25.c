@@ -471,11 +471,19 @@ static int at25_remove(struct spi_device *spi)
 
 /*-------------------------------------------------------------------------*/
 
+static const struct spi_device_id at25_id[] = {
+        {"at25", 0},
+        {"m95256", 0},
+        { }
+};
+MODULE_DEVICE_TABLE(spi, at25_id);
+
 static struct spi_driver at25_driver = {
 	.driver = {
 		.name		= "at25",
 		.owner		= THIS_MODULE,
 	},
+        .id_table       = at25_id,
 	.probe		= at25_probe,
 	.remove		= at25_remove,
 };
@@ -485,4 +493,3 @@ module_spi_driver(at25_driver);
 MODULE_DESCRIPTION("Driver for most SPI EEPROMs");
 MODULE_AUTHOR("David Brownell");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("spi:at25");

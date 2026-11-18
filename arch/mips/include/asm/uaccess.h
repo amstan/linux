@@ -115,11 +115,11 @@ extern u64 __ua_limit;
 
 #define __access_mask get_fs().seg
 
-#define __access_ok(addr, size, mask)					\
+#define __access_ok(addr, size)						\
 ({									\
 	unsigned long __addr = (unsigned long) (addr);			\
 	unsigned long __size = size;					\
-	unsigned long __mask = mask;					\
+	unsigned long __mask = __access_mask;				\
 	unsigned long __ok;						\
 									\
 	__chk_user_ptr(addr);						\
@@ -129,7 +129,7 @@ extern u64 __ua_limit;
 })
 
 #define access_ok(type, addr, size)					\
-	likely(__access_ok((addr), (size), __access_mask))
+	likely(__access_ok((addr), (size)))
 
 /*
  * put_user: - Write a simple value into user space.

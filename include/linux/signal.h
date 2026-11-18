@@ -226,6 +226,7 @@ static inline void init_sigpending(struct sigpending *sig)
 }
 
 extern void flush_sigqueue(struct sigpending *queue);
+extern void flush_task_sigqueue(struct task_struct *tsk);
 
 /* Test if 'sig' is valid signal. Use this instead of testing _NSIG directly */
 static inline int valid_signal(unsigned long sig)
@@ -239,6 +240,7 @@ struct pt_regs;
 extern int next_signal(struct sigpending *pending, sigset_t *mask);
 extern int do_send_sig_info(int sig, struct siginfo *info,
 				struct task_struct *p, bool group);
+extern int specific_send_sig_info(int, struct siginfo *, struct task_struct *);
 extern int group_send_sig_info(int sig, struct siginfo *info, struct task_struct *p);
 extern int __group_send_sig_info(int, struct siginfo *, struct task_struct *);
 extern int do_sigtimedwait(const sigset_t *, siginfo_t *,
@@ -433,6 +435,7 @@ void signals_init(void);
 
 int restore_altstack(const stack_t __user *);
 int __save_altstack(stack_t __user *, unsigned long);
+void __save_altstack_ex(stack_t __user *, unsigned long);
 
 #define save_altstack_ex(uss, sp) do { \
 	stack_t __user *__uss = uss; \

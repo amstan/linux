@@ -727,9 +727,9 @@ i915_gem_check_execbuffer(struct drm_i915_gem_execbuffer2 *exec)
 
 static int
 validate_exec_list(struct drm_i915_gem_exec_object2 *exec,
-		   int count)
+		   unsigned int count)
 {
-	int i;
+	unsigned int i;
 	int relocs_total = 0;
 	int relocs_max = INT_MAX / sizeof(struct drm_i915_gem_relocation_entry);
 
@@ -1071,7 +1071,9 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 			goto err;
 	}
 
+#ifndef CONFIG_PREEMPT_RT_BASE
 	trace_i915_gem_ring_dispatch(ring, intel_ring_get_seqno(ring), flags);
+#endif
 
 	i915_gem_execbuffer_move_to_active(&eb->objects, ring);
 	i915_gem_execbuffer_retire_commands(dev, file, ring);

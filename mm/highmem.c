@@ -29,9 +29,10 @@
 #include <linux/kgdb.h>
 #include <asm/tlbflush.h>
 
-
+#ifndef CONFIG_PREEMPT_RT_FULL
 #if defined(CONFIG_HIGHMEM) || defined(CONFIG_X86_32)
 DEFINE_PER_CPU(int, __kmap_atomic_idx);
+#endif
 #endif
 
 /*
@@ -47,8 +48,9 @@ DEFINE_PER_CPU(int, __kmap_atomic_idx);
 unsigned long totalhigh_pages __read_mostly;
 EXPORT_SYMBOL(totalhigh_pages);
 
-
+#ifndef CONFIG_PREEMPT_RT_FULL
 EXPORT_PER_CPU_SYMBOL(__kmap_atomic_idx);
+#endif
 
 unsigned int nr_free_highpages (void)
 {
@@ -138,8 +140,9 @@ static void flush_all_zero_pkmaps(void)
 		 * So no dangers, even with speculative execution.
 		 */
 		page = pte_page(pkmap_page_table[i]);
+		pax_open_kernel();
 		pte_clear(&init_mm, PKMAP_ADDR(i), &pkmap_page_table[i]);
-
+		pax_close_kernel();
 		set_page_address(page, NULL);
 		need_flush = 1;
 	}
@@ -198,9 +201,11 @@ start:
 		}
 	}
 	vaddr = PKMAP_ADDR(last_pkmap_nr);
+
+	pax_open_kernel();
 	set_pte_at(&init_mm, vaddr,
 		   &(pkmap_page_table[last_pkmap_nr]), mk_pte(page, kmap_prot));
-
+	pax_close_kernel();
 	pkmap_count[last_pkmap_nr] = 1;
 	set_page_address(page, (void *)vaddr);
 

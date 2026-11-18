@@ -16,6 +16,7 @@
 #include <linux/module.h>
 #include <linux/hardirq.h>
 #include <linux/interrupt.h>
+#include <linux/msa.h>
 #include <asm/processor.h>
 #include <asm/hypervisor.h>
 #include <asm/hyperv.h>
@@ -106,6 +107,7 @@ void hyperv_vector_handler(struct pt_regs *regs)
 	struct irq_desc *desc;
 
 	irq_enter();
+	msa_start_irq(vmbus_irq);
 	exit_idle();
 
 	desc = irq_to_desc(vmbus_irq);
@@ -113,7 +115,7 @@ void hyperv_vector_handler(struct pt_regs *regs)
 	if (desc)
 		generic_handle_irq_desc(vmbus_irq, desc);
 
-	irq_exit();
+	msa_irq_exit(vmbus_irq, regs->cs != __KERNEL_CS);
 	set_irq_regs(old_regs);
 }
 #else

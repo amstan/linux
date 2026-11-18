@@ -34,7 +34,6 @@
 #include <linux/workqueue.h>
 #include <linux/pci.h>
 #include <linux/pci_hotplug.h>
-#include <linux/init.h>
 #include <asm/uaccess.h>
 #include "cpqphp.h"
 #include "cpqphp_nvram.h"
@@ -428,9 +427,13 @@ static u32 store_HRT (void __iomem *rom_start)
 
 void compaq_nvram_init (void __iomem *rom_start)
 {
+
+#ifndef CONFIG_PAX_KERNEXEC
 	if (rom_start) {
 		compaq_int15_entry_point = (rom_start + ROM_INT15_PHY_ADDR - ROM_PHY_ADDR);
 	}
+#endif
+
 	dbg("int15 entry  = %p\n", compaq_int15_entry_point);
 
 	/* initialize our int15 lock */

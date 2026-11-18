@@ -294,7 +294,7 @@ int trace_seq_path(struct trace_seq *s, const struct path *path)
 
 	p = d_path(path, s->buffer + s->len, PAGE_SIZE - s->len);
 	if (!IS_ERR(p)) {
-		p = mangle_path(s->buffer + s->len, p, "\n");
+		p = mangle_path(s->buffer + s->len, p, "\n\\");
 		if (p) {
 			s->len = p - s->buffer;
 			return 1;
@@ -606,6 +606,7 @@ int trace_print_lat_fmt(struct trace_seq *s, struct trace_entry *entry)
 {
 	char hardsoft_irq;
 	char need_resched;
+	char need_resched_lazy;
 	char irqs_off;
 	int hardirq;
 	int softirq;
@@ -620,18 +621,31 @@ int trace_print_lat_fmt(struct trace_seq *s, struct trace_entry *entry)
 		'.';
 	need_resched =
 		(entry->flags & TRACE_FLAG_NEED_RESCHED) ? 'N' : '.';
+	need_resched_lazy =
+		(entry->flags & TRACE_FLAG_NEED_RESCHED_LAZY) ? 'L' : '.';
 	hardsoft_irq =
 		(hardirq && softirq) ? 'H' :
 		hardirq ? 'h' :
 		softirq ? 's' :
 		'.';
 
-	if (!trace_seq_printf(s, "%c%c%c",
-			      irqs_off, need_resched, hardsoft_irq))
+	if (!trace_seq_printf(s, "%c%c%c%c",
+			      irqs_off, need_resched, need_resched_lazy,
+			      hardsoft_irq))
 		return 0;
 
 	if (entry->preempt_count)
 		ret = trace_seq_printf(s, "%x", entry->preempt_count);
+	else
+		ret = trace_seq_putc(s, '.');
+
+	if (entry->preempt_lazy_count)
+		ret = trace_seq_printf(s, "%x", entry->preempt_lazy_count);
+	else
+		ret = trace_seq_putc(s, '.');
+
+	if (entry->migrate_disable)
+		ret = trace_seq_printf(s, "%x", entry->migrate_disable);
 	else
 		ret = trace_seq_putc(s, '.');
 
@@ -893,14 +907,16 @@ int register_ftrace_event(struct trace_event *event)
 			goto out;
 	}
 
+	pax_open_kernel();
 	if (event->funcs->trace == NULL)
-		event->funcs->trace = trace_nop_print;
+		*(void **)&event->funcs->trace = trace_nop_print;
 	if (event->funcs->raw == NULL)
-		event->funcs->raw = trace_nop_print;
+		*(void **)&event->funcs->raw = trace_nop_print;
 	if (event->funcs->hex == NULL)
-		event->funcs->hex = trace_nop_print;
+		*(void **)&event->funcs->hex = trace_nop_print;
 	if (event->funcs->binary == NULL)
-		event->funcs->binary = trace_nop_print;
+		*(void **)&event->funcs->binary = trace_nop_print;
+	pax_close_kernel();
 
 	key = event->type & (EVENT_HASHSIZE - 1);
 

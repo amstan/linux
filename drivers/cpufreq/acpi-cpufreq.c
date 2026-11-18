@@ -172,7 +172,7 @@ static ssize_t show_global_boost(struct kobject *kobj,
 	return sprintf(buf, "%u\n", boost_enabled);
 }
 
-static struct global_attr global_boost = __ATTR(boost, 0644,
+static global_attr_no_const global_boost = __ATTR(boost, 0644,
 						show_global_boost,
 						store_global_boost);
 
@@ -232,7 +232,7 @@ static unsigned extract_msr(u32 msr, struct acpi_cpufreq_data *data)
 	perf = data->acpi_data;
 
 	for (i = 0; data->freq_table[i].frequency != CPUFREQ_TABLE_END; i++) {
-		if (msr == perf->states[data->freq_table[i].index].status)
+		if (msr == perf->states[data->freq_table[i].driver_data].status)
 			return data->freq_table[i].frequency;
 	}
 	return data->freq_table[0].frequency;
@@ -442,7 +442,7 @@ static int acpi_cpufreq_target(struct cpufreq_policy *policy,
 		goto out;
 	}
 
-	next_perf_state = data->freq_table[next_state].index;
+	next_perf_state = data->freq_table[next_state].driver_data;
 	if (perf->state == next_perf_state) {
 		if (unlikely(data->resume)) {
 			pr_debug("Called after resume, resetting to P%d\n",
@@ -705,8 +705,11 @@ static int acpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	data->acpi_data = per_cpu_ptr(acpi_perf_data, cpu);
 	per_cpu(acfreq_data, cpu) = data;
 
-	if (cpu_has(c, X86_FEATURE_CONSTANT_TSC))
-		acpi_cpufreq_driver.flags |= CPUFREQ_CONST_LOOPS;
+	if (cpu_has(c, X86_FEATURE_CONSTANT_TSC)) {
+		pax_open_kernel();
+		*(u8 *)&acpi_cpufreq_driver.flags |= CPUFREQ_CONST_LOOPS;
+		pax_close_kernel();
+	}
 
 	result = acpi_processor_register_performance(data->acpi_data, cpu);
 	if (result)
@@ -811,7 +814,7 @@ static int acpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 		    data->freq_table[valid_states-1].frequency / 1000)
 			continue;
 
-		data->freq_table[valid_states].index = i;
+		data->freq_table[valid_states].driver_data = i;
 		data->freq_table[valid_states].frequency =
 		    perf->states[i].core_frequency * 1000;
 		valid_states++;
@@ -832,7 +835,9 @@ static int acpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 		policy->cur = acpi_cpufreq_guess_freq(data, policy->cpu);
 		break;
 	case ACPI_ADR_SPACE_FIXED_HARDWARE:
-		acpi_cpufreq_driver.get = get_cur_freq_on_cpu;
+		pax_open_kernel();
+		*(void **)&acpi_cpufreq_driver.get = get_cur_freq_on_cpu;
+		pax_close_kernel();
 		policy->cur = get_cur_freq_on_cpu(cpu);
 		break;
 	default:
@@ -843,8 +848,11 @@ static int acpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	acpi_processor_notify_smm(THIS_MODULE);
 
 	/* Check for APERF/MPERF support in hardware */
-	if (boot_cpu_has(X86_FEATURE_APERFMPERF))
-		acpi_cpufreq_driver.getavg = cpufreq_get_measured_perf;
+	if (boot_cpu_has(X86_FEATURE_APERFMPERF)) {
+		pax_open_kernel();
+		*(void **)&acpi_cpufreq_driver.getavg = cpufreq_get_measured_perf;
+		pax_close_kernel();
+	}
 
 	pr_debug("CPU%u - ACPI performance management activated.\n", cpu);
 	for (i = 0; i < perf->state_count; i++)

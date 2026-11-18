@@ -59,6 +59,41 @@
 #define S3C24XX_SERIAL_MAJOR	204
 #define S3C24XX_SERIAL_MINOR	64
 
+#ifndef CONFIG_CPU_BIG_ENDIAN /* little endian */
+static inline void __hw_set_bit(int nr, volatile unsigned long *addr)
+{
+        __set_bit(nr, addr);
+}
+
+static inline void __hw_clear_bit(int nr, volatile unsigned long *addr)
+{
+        __clear_bit(nr, addr);
+}
+#else
+static inline void __hw_set_bit(int nr, volatile unsigned long *addr)
+{
+	unsigned long mask = BIT_MASK(nr);
+	unsigned long *p = ((unsigned long *)addr) + BIT_WORD(nr);
+        unsigned long val = le32_to_cpu(*p);
+
+	val  |= mask;
+
+        *p = cpu_to_le32(val);
+}
+
+static inline void __hw_clear_bit(int nr, volatile unsigned long *addr)
+{
+	unsigned long mask = BIT_MASK(nr);
+	unsigned long *p = ((unsigned long *)addr) + BIT_WORD(nr);
+
+        unsigned long val = le32_to_cpu(*p);
+
+	val &= ~mask;
+
+        *p = cpu_to_le32(val);
+}
+#endif
+
 /* macros to change one thing to another */
 
 #define tx_enabled(port) ((port)->unused[0])
@@ -138,7 +173,7 @@ static void s3c24xx_serial_stop_tx(struct uart_port *port)
 
 	if (tx_enabled(port)) {
 		if (s3c24xx_serial_has_interrupt_mask(port))
-			__set_bit(S3C64XX_UINTM_TXD,
+			__hw_set_bit(S3C64XX_UINTM_TXD,
 				portaddrl(port, S3C64XX_UINTM));
 		else
 			disable_irq_nosync(ourport->tx_irq);
@@ -157,7 +192,7 @@ static void s3c24xx_serial_start_tx(struct uart_port *port)
 			s3c24xx_serial_rx_disable(port);
 
 		if (s3c24xx_serial_has_interrupt_mask(port))
-			__clear_bit(S3C64XX_UINTM_TXD,
+			__hw_clear_bit(S3C64XX_UINTM_TXD,
 				portaddrl(port, S3C64XX_UINTM));
 		else
 			enable_irq(ourport->tx_irq);
@@ -172,7 +207,7 @@ static void s3c24xx_serial_stop_rx(struct uart_port *port)
 	if (rx_enabled(port)) {
 		dbg("s3c24xx_serial_stop_rx: port=%p\n", port);
 		if (s3c24xx_serial_has_interrupt_mask(port))
-			__set_bit(S3C64XX_UINTM_RXD,
+			__hw_set_bit(S3C64XX_UINTM_RXD,
 				portaddrl(port, S3C64XX_UINTM));
 		else
 			disable_irq_nosync(ourport->rx_irq);
@@ -453,10 +488,15 @@ static void s3c24xx_serial_shutdown(struct uart_port *port)
 	}
 }
 
+static int s3c64xx_serial_startup(struct uart_port *port);
 static int s3c24xx_serial_startup(struct uart_port *port)
 {
 	struct s3c24xx_uart_port *ourport = to_ourport(port);
 	int ret;
+
+	/* Startup sequence is different for s3c64xx and higher SoC's */
+	if (s3c24xx_serial_has_interrupt_mask(port))
+		return s3c64xx_serial_startup(port);
 
 	dbg("s3c24xx_serial_startup: port=%p (%08lx,%p)\n",
 	    port->mapbase, port->membase);
@@ -523,7 +563,7 @@ static int s3c64xx_serial_startup(struct uart_port *port)
 	ourport->tx_claimed = 1;
 
 	/* Enable Rx Interrupt */
-	__clear_bit(S3C64XX_UINTM_RXD, portaddrl(port, S3C64XX_UINTM));
+	__hw_clear_bit(S3C64XX_UINTM_RXD, portaddrl(port, S3C64XX_UINTM));
 	dbg("s3c64xx_serial_startup ok\n");
 	return ret;
 }
@@ -1017,6 +1057,9 @@ static void s3c24xx_serial_resetport(struct uart_port *port,
 	wr_regl(port, S3C2410_UFCON, cfg->ufcon | S3C2410_UFCON_RESETBOTH);
 	wr_regl(port, S3C2410_UFCON, cfg->ufcon);
 
+	wr_regl(port, S3C64XX_UINTM, 0xf);
+	wr_regl(port, S3C64XX_UINTP, 0xf);
+
 	/* some delay is required after fifo reset */
 	udelay(1);
 }
@@ -1127,10 +1170,6 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
 
 	/* setup info for port */
 	port->dev	= &platdev->dev;
-
-	/* Startup sequence is different for s3c64xx and higher SoC's */
-	if (s3c24xx_serial_has_interrupt_mask(port))
-		s3c24xx_serial_ops.startup = s3c64xx_serial_startup;
 
 	port->uartclk = 1;
 
@@ -1717,9 +1756,7 @@ static struct s3c24xx_serial_drv_data s5pv210_serial_drv_data = {
 #define S5PV210_SERIAL_DRV_DATA	(kernel_ulong_t)NULL
 #endif
 
-#if defined(CONFIG_CPU_EXYNOS4210) || defined(CONFIG_SOC_EXYNOS4212) || \
-	defined(CONFIG_SOC_EXYNOS4412) || defined(CONFIG_SOC_EXYNOS5250) || \
-	defined(CONFIG_SOC_EXYNOS5440)
+#if defined(CONFIG_ARCH_EXYNOS)
 static struct s3c24xx_serial_drv_data exynos4210_serial_drv_data = {
 	.info = &(struct s3c24xx_uart_info) {
 		.name		= "Samsung Exynos4 UART",

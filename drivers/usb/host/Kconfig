@@ -25,6 +25,12 @@ config USB_XHCI_HCD
 	  To compile this driver as a module, choose M here: the
 	  module will be called xhci-hcd.
 
+
+config USB_XHCI_HCD_OCTEON
+	tristate
+	depends on USB_XHCI_HCD && CAVIUM_OCTEON_SOC
+	default y
+
 if USB_XHCI_HCD
 
 config USB_XHCI_PLATFORM
@@ -225,7 +231,7 @@ config USB_EHCI_SH
 
 config USB_EHCI_S5P
        tristate "EHCI support for Samsung S5P/EXYNOS SoC Series"
-       depends on PLAT_S5P
+       depends on PLAT_S5P || ARCH_EXYNOS
        help
 	Enable support for the Samsung S5Pxxxx and Exynos3/4/5 SOC's
 	on-chip EHCI controller.
@@ -283,9 +289,17 @@ config USB_EHCI_HCD_PLATFORM
 
 	  If unsure, say N.
 
+config USB_OCTEON_HCD
+	tristate "Octeon usb host driver" 
+	depends on CAVIUM_OCTEON_SOC
+ 	default n
+        help
+          The Octeon DWC_OTG USB host controller.  All CN3XXX and
+          CN5XXX based chips with USB are supported.
+
 config USB_OCTEON_EHCI
 	bool "Octeon on-chip EHCI support"
-	depends on CPU_CAVIUM_OCTEON
+	depends on CAVIUM_OCTEON_SOC
 	default n
 	select USB_EHCI_BIG_ENDIAN_MMIO
 	help
@@ -480,7 +494,7 @@ config USB_OHCI_HCD_PLATFORM
 
 config USB_OCTEON_OHCI
 	bool "Octeon on-chip OHCI support"
-	depends on CPU_CAVIUM_OCTEON
+	depends on  CAVIUM_OCTEON_SOC
 	default USB_OCTEON_EHCI
 	select USB_OHCI_BIG_ENDIAN_MMIO
 	select USB_OHCI_LITTLE_ENDIAN

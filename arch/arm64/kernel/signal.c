@@ -34,6 +34,7 @@
 #include <asm/fpsimd.h>
 #include <asm/signal32.h>
 #include <asm/vdso.h>
+#include <asm/syscalls.h>
 
 /*
  * Do a signal return; undo the signal stack. These are aligned to 128-bit.
@@ -149,6 +150,19 @@ asmlinkage long sys_rt_sigreturn(struct pt_regs *regs)
 	if (restore_sigframe(regs, frame))
 		goto badframe;
 
+#ifdef CONFIG_ARM64_ILP32
+	/*
+	 * ILP32 has to be handled "special" due to maybe not zeroing out
+	 * the upper 32bits of the pointer if the user changed the frame.
+	 */
+	if (is_ilp32_compat_task()) {
+		if (ilp32_sys_sigaltstack(&frame->uc.uc_stack,
+					  NULL) == -EFAULT)
+			goto badframe;
+		return regs->regs[0];
+	}
+#endif
+
 	if (restore_altstack(&frame->uc.uc_stack))
 		goto badframe;
 
@@ -233,6 +247,10 @@ static void setup_return(struct pt_regs *regs, struct k_sigaction *ka,
 
 	if (ka->sa.sa_flags & SA_RESTORER)
 		sigtramp = ka->sa.sa_restorer;
+#ifdef CONFIG_ARM64_ILP32
+	else if (is_ilp32_compat_task())
+		sigtramp = VDSO_SYMBOL(current->mm->context.vdso, sigtramp_ilp32);
+#endif
 	else
 		sigtramp = VDSO_SYMBOL(current->mm->context.vdso, sigtramp);
 
@@ -268,7 +286,7 @@ static int setup_rt_frame(int usig, struct k_sigaction *ka, siginfo_t *info,
 
 static void setup_restart_syscall(struct pt_regs *regs)
 {
-	if (is_compat_task())
+	if (is_a32_compat_task())
 		compat_setup_restart_syscall(regs);
 	else
 		regs->regs[8] = __NR_restart_syscall;
@@ -295,7 +313,7 @@ static void handle_signal(unsigned long sig, struct k_sigaction *ka,
 	/*
 	 * Set up the stack frame
 	 */
-	if (is_compat_task()) {
+	if ((is_a32_compat_task())) {
 		if (ka->sa.sa_flags & SA_SIGINFO)
 			ret = compat_setup_rt_frame(usig, ka, info, oldset,
 						    regs);
@@ -417,3 +435,18 @@ asmlinkage void do_notify_resume(struct pt_regs *regs,
 		tracehook_notify_resume(regs);
 	}
 }
+
+/*
+ * Some functions are needed for compat ptrace but we don't define
+ * them if we don't have AARCH32 support compiled in
+ */
+#if defined CONFIG_COMPAT && !defined CONFIG_AARCH32_EL0
+int copy_siginfo_to_user32(compat_siginfo_t __user *to, const siginfo_t *from)
+{
+	return -EFAULT;
+}
+int copy_siginfo_from_user32(siginfo_t *to, compat_siginfo_t __user *from)
+{
+	return -EFAULT;
+}
+#endif

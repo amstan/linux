@@ -20,25 +20,30 @@
 
 #include <linux/kvm_host.h>
 
+#include <asm/kvm_mips_te.h>
+
 #include "kvm_mips_int.h"
 
-void kvm_mips_queue_irq(struct kvm_vcpu *vcpu, uint32_t priority)
+static void kvm_mips_queue_irq(struct kvm_vcpu *vcpu, uint32_t priority)
 {
-	set_bit(priority, &vcpu->arch.pending_exceptions);
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	set_bit(priority, &vcpu_te->pending_exceptions);
 }
 
-void kvm_mips_dequeue_irq(struct kvm_vcpu *vcpu, uint32_t priority)
+static void kvm_mips_dequeue_irq(struct kvm_vcpu *vcpu, uint32_t priority)
 {
-	clear_bit(priority, &vcpu->arch.pending_exceptions);
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	clear_bit(priority, &vcpu_te->pending_exceptions);
 }
 
 void kvm_mips_queue_timer_int_cb(struct kvm_vcpu *vcpu)
 {
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
 	/* Cause bits to reflect the pending timer interrupt,
 	 * the EXC code will be set when we are actually
 	 * delivering the interrupt:
 	 */
-	kvm_set_c0_guest_cause(vcpu->arch.cop0, (C_IRQ5 | C_TI));
+	kvm_set_c0_guest_cause(vcpu_te->cop0, (C_IRQ5 | C_TI));
 
 	/* Queue up an INT exception for the core */
 	kvm_mips_queue_irq(vcpu, MIPS_EXC_INT_TIMER);
@@ -47,13 +52,15 @@ void kvm_mips_queue_timer_int_cb(struct kvm_vcpu *vcpu)
 
 void kvm_mips_dequeue_timer_int_cb(struct kvm_vcpu *vcpu)
 {
-	kvm_clear_c0_guest_cause(vcpu->arch.cop0, (C_IRQ5 | C_TI));
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	kvm_clear_c0_guest_cause(vcpu_te->cop0, (C_IRQ5 | C_TI));
 	kvm_mips_dequeue_irq(vcpu, MIPS_EXC_INT_TIMER);
 }
 
 void
 kvm_mips_queue_io_int_cb(struct kvm_vcpu *vcpu, struct kvm_mips_interrupt *irq)
 {
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
 	int intr = (int)irq->irq;
 
 	/* Cause bits to reflect the pending IO interrupt,
@@ -62,18 +69,18 @@ kvm_mips_queue_io_int_cb(struct kvm_vcpu *vcpu, struct kvm_mips_interrupt *irq)
 	 */
 	switch (intr) {
 	case 2:
-		kvm_set_c0_guest_cause(vcpu->arch.cop0, (C_IRQ0));
+		kvm_set_c0_guest_cause(vcpu_te->cop0, (C_IRQ0));
 		/* Queue up an INT exception for the core */
 		kvm_mips_queue_irq(vcpu, MIPS_EXC_INT_IO);
 		break;
 
 	case 3:
-		kvm_set_c0_guest_cause(vcpu->arch.cop0, (C_IRQ1));
+		kvm_set_c0_guest_cause(vcpu_te->cop0, (C_IRQ1));
 		kvm_mips_queue_irq(vcpu, MIPS_EXC_INT_IPI_1);
 		break;
 
 	case 4:
-		kvm_set_c0_guest_cause(vcpu->arch.cop0, (C_IRQ2));
+		kvm_set_c0_guest_cause(vcpu_te->cop0, (C_IRQ2));
 		kvm_mips_queue_irq(vcpu, MIPS_EXC_INT_IPI_2);
 		break;
 
@@ -87,20 +94,21 @@ void
 kvm_mips_dequeue_io_int_cb(struct kvm_vcpu *vcpu,
 			   struct kvm_mips_interrupt *irq)
 {
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
 	int intr = (int)irq->irq;
 	switch (intr) {
 	case -2:
-		kvm_clear_c0_guest_cause(vcpu->arch.cop0, (C_IRQ0));
+		kvm_clear_c0_guest_cause(vcpu_te->cop0, (C_IRQ0));
 		kvm_mips_dequeue_irq(vcpu, MIPS_EXC_INT_IO);
 		break;
 
 	case -3:
-		kvm_clear_c0_guest_cause(vcpu->arch.cop0, (C_IRQ1));
+		kvm_clear_c0_guest_cause(vcpu_te->cop0, (C_IRQ1));
 		kvm_mips_dequeue_irq(vcpu, MIPS_EXC_INT_IPI_1);
 		break;
 
 	case -4:
-		kvm_clear_c0_guest_cause(vcpu->arch.cop0, (C_IRQ2));
+		kvm_clear_c0_guest_cause(vcpu_te->cop0, (C_IRQ2));
 		kvm_mips_dequeue_irq(vcpu, MIPS_EXC_INT_IPI_2);
 		break;
 
@@ -119,7 +127,8 @@ kvm_mips_irq_deliver_cb(struct kvm_vcpu *vcpu, unsigned int priority,
 	uint32_t exccode;
 
 	struct kvm_vcpu_arch *arch = &vcpu->arch;
-	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	struct mips_coproc *cop0 = vcpu_te->cop0;
 
 	switch (priority) {
 	case MIPS_EXC_INT_TIMER:
@@ -167,7 +176,7 @@ kvm_mips_irq_deliver_cb(struct kvm_vcpu *vcpu, unsigned int priority,
 
 		if ((kvm_read_c0_guest_status(cop0) & ST0_EXL) == 0) {
 			/* save old pc */
-			kvm_write_c0_guest_epc(cop0, arch->pc);
+			kvm_write_c0_guest_epc(cop0, arch->epc);
 			kvm_set_c0_guest_status(cop0, ST0_EXL);
 
 			if (cause & CAUSEF_BD)
@@ -175,7 +184,7 @@ kvm_mips_irq_deliver_cb(struct kvm_vcpu *vcpu, unsigned int priority,
 			else
 				kvm_clear_c0_guest_cause(cop0, CAUSEF_BD);
 
-			kvm_debug("Delivering INT @ pc %#lx\n", arch->pc);
+			kvm_debug("Delivering INT @ pc %#lx\n", arch->epc);
 
 		} else
 			kvm_err("Trying to deliver interrupt when EXL is already set\n");
@@ -185,11 +194,11 @@ kvm_mips_irq_deliver_cb(struct kvm_vcpu *vcpu, unsigned int priority,
 
 		/* XXXSL Set PC to the interrupt exception entry point */
 		if (kvm_read_c0_guest_cause(cop0) & CAUSEF_IV)
-			arch->pc = KVM_GUEST_KSEG0 + 0x200;
+			arch->epc = KVM_GUEST_KSEG0 + 0x200;
 		else
-			arch->pc = KVM_GUEST_KSEG0 + 0x180;
+			arch->epc = KVM_GUEST_KSEG0 + 0x180;
 
-		clear_bit(priority, &vcpu->arch.pending_exceptions);
+		clear_bit(priority, &vcpu_te->pending_exceptions);
 	}
 
 	return allowed;
@@ -204,8 +213,9 @@ kvm_mips_irq_clear_cb(struct kvm_vcpu *vcpu, unsigned int priority,
 
 void kvm_mips_deliver_interrupts(struct kvm_vcpu *vcpu, uint32_t cause)
 {
-	unsigned long *pending = &vcpu->arch.pending_exceptions;
-	unsigned long *pending_clr = &vcpu->arch.pending_exceptions_clr;
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	unsigned long *pending = &vcpu_te->pending_exceptions;
+	unsigned long *pending_clr = &vcpu_te->pending_exceptions_clr;
 	unsigned int priority;
 
 	if (!(*pending) && !(*pending_clr))
@@ -239,5 +249,6 @@ void kvm_mips_deliver_interrupts(struct kvm_vcpu *vcpu, uint32_t cause)
 
 int kvm_mips_pending_timer(struct kvm_vcpu *vcpu)
 {
-	return test_bit(MIPS_EXC_INT_TIMER, &vcpu->arch.pending_exceptions);
+	struct kvm_mips_vcpu_te *vcpu_te = vcpu->arch.impl;
+	return test_bit(MIPS_EXC_INT_TIMER, &vcpu_te->pending_exceptions);
 }

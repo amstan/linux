@@ -363,68 +363,63 @@ validate_group(struct perf_event *event)
 }
 
 static void
+disable_percpu_pmuirq(void *irq_p)
+{
+	disable_percpu_irq(*(int *)irq_p);
+}
+
+static void
 armpmu_release_hardware(struct arm_pmu *armpmu)
 {
-	int i, irq, irqs;
+	int  irq, cpu;
 	struct platform_device *pmu_device = armpmu->plat_device;
+	irq = platform_get_irq(pmu_device, 0);
 
-	irqs = min(pmu_device->num_resources, num_possible_cpus());
+	for_each_online_cpu(cpu)
+		smp_call_function_single(cpu, disable_percpu_pmuirq, &irq, 1);
 
-	for (i = 0; i < irqs; ++i) {
-		if (!cpumask_test_and_clear_cpu(i, &armpmu->active_irqs))
-			continue;
-		irq = platform_get_irq(pmu_device, i);
-		if (irq >= 0)
-			free_irq(irq, armpmu);
-	}
+	free_percpu_irq(irq, armpmu);
+}
+
+static void
+enable_percpu_pmuirq(void *irq_p)
+{
+	enable_percpu_irq(*(int *)irq_p, 0);
 }
 
 static int
 armpmu_reserve_hardware(struct arm_pmu *armpmu)
 {
-	int i, err, irq, irqs;
+	int  err, irq;
 	struct platform_device *pmu_device = armpmu->plat_device;
+	int cpu;
 
 	if (!pmu_device) {
 		pr_err("no PMU device registered\n");
 		return -ENODEV;
 	}
 
-	irqs = min(pmu_device->num_resources, num_possible_cpus());
-	if (irqs < 1) {
-		pr_err("no irqs for PMUs defined\n");
+	err = 0;
+	irq = platform_get_irq(pmu_device, 0);
+	if (irq < 0)
 		return -ENODEV;
+	
+	/*
+	 * PMUv3's interrupt configured as PPI in GIC3.
+	 * registering for PPI interrupt on all online CPUs.
+	 */
+	err = request_percpu_irq( irq, armpmu->handle_irq,
+			"arm-pmu", armpmu);
+	if (err) {
+		pr_err("unable to request IRQ%d for ARM PMU counters\n",
+			irq);
+		armpmu_release_hardware(armpmu);
+		return err;
 	}
 
-	for (i = 0; i < irqs; ++i) {
-		err = 0;
-		irq = platform_get_irq(pmu_device, i);
-		if (irq < 0)
-			continue;
-
-		/*
-		 * If we have a single PMU interrupt that we can't shift,
-		 * assume that we're running on a uniprocessor machine and
-		 * continue. Otherwise, continue without this interrupt.
-		 */
-		if (irq_set_affinity(irq, cpumask_of(i)) && irqs > 1) {
-			pr_warning("unable to set irq affinity (irq=%d, cpu=%u)\n",
-				    irq, i);
-			continue;
-		}
-
-		err = request_irq(irq, armpmu->handle_irq,
-				  IRQF_NOBALANCING,
-				  "arm-pmu", armpmu);
-		if (err) {
-			pr_err("unable to request IRQ%d for ARM PMU counters\n",
-				irq);
-			armpmu_release_hardware(armpmu);
-			return err;
-		}
-
-		cpumask_set_cpu(i, &armpmu->active_irqs);
-	}
+	/* Enable IRQ in each CPU's context using call-back function */
+	for_each_online_cpu(cpu)
+		smp_call_function_single(cpu, enable_percpu_pmuirq, &irq, true);
 
 	return 0;
 }
@@ -854,13 +849,15 @@ static inline int armv8pmu_select_counter(int idx)
 static inline u32 armv8pmu_read_counter(int idx)
 {
 	u32 value = 0;
+	u64 value64 = 0;
 
 	if (!armv8pmu_counter_valid(idx))
 		pr_err("CPU%u reading wrong counter %d\n",
 			smp_processor_id(), idx);
-	else if (idx == ARMV8_IDX_CYCLE_COUNTER)
-		asm volatile("mrs %0, pmccntr_el0" : "=r" (value));
-	else if (armv8pmu_select_counter(idx) == idx)
+	else if (idx == ARMV8_IDX_CYCLE_COUNTER) {
+		asm volatile("mrs %0, pmccntr_el0" : "=r" (value64));
+		value = value64;
+	} else if (armv8pmu_select_counter(idx) == idx)
 		asm volatile("mrs %0, pmxevcntr_el0" : "=r" (value));
 
 	return value;
@@ -868,12 +865,15 @@ static inline u32 armv8pmu_read_counter(int idx)
 
 static inline void armv8pmu_write_counter(int idx, u32 value)
 {
+	u64 value64;
+
 	if (!armv8pmu_counter_valid(idx))
 		pr_err("CPU%u writing wrong counter %d\n",
 			smp_processor_id(), idx);
-	else if (idx == ARMV8_IDX_CYCLE_COUNTER)
-		asm volatile("msr pmccntr_el0, %0" :: "r" (value));
-	else if (armv8pmu_select_counter(idx) == idx)
+	else if (idx == ARMV8_IDX_CYCLE_COUNTER) {
+		value64 = value | 0xffffffff00000000;
+		asm volatile("msr pmccntr_el0, %0" :: "r" (value64));
+	} else if (armv8pmu_select_counter(idx) == idx)
 		asm volatile("msr pmxevcntr_el0, %0" :: "r" (value));
 }
 

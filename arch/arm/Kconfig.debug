@@ -692,4 +692,10 @@ config PID_IN_CONTEXTIDR
 	  additional instructions during context switch. Say Y here only if you
 	  are planning to use hardware trace tools with this kernel.
 
+config HAVE_ARCH_MICROSTATE_ACCT
+	def_bool y
+
+config MICROSTATE_ACCT_SCHED_CLOCK_CLOCKSOURCE
+        def_bool y
+
 endmenu

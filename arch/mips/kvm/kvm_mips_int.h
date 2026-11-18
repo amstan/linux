@@ -32,8 +32,6 @@
 #define KVM_MIPS_IRQ_DELIVER_ALL_AT_ONCE (0)
 #define KVM_MIPS_IRQ_CLEAR_ALL_AT_ONCE   (0)
 
-void kvm_mips_queue_irq(struct kvm_vcpu *vcpu, uint32_t priority);
-void kvm_mips_dequeue_irq(struct kvm_vcpu *vcpu, uint32_t priority);
 int kvm_mips_pending_timer(struct kvm_vcpu *vcpu);
 
 void kvm_mips_queue_timer_int_cb(struct kvm_vcpu *vcpu);

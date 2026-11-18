@@ -37,6 +37,7 @@
 #include <asm/cputype.h>
 #include <asm/elf.h>
 #include <asm/procinfo.h>
+#include <asm/psci.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
 #include <asm/smp_plat.h>
@@ -73,7 +74,7 @@ __setup("fpe=", fpe_setup);
 
 extern void paging_init(struct machine_desc *desc);
 extern void sanity_check_meminfo(void);
-extern void reboot_setup(char *str);
+extern enum reboot_mode reboot_mode;
 extern void setup_dma_zone(struct machine_desc *desc);
 
 unsigned int processor_id;
@@ -97,21 +98,23 @@ EXPORT_SYMBOL(system_serial_high);
 unsigned int elf_hwcap __read_mostly;
 EXPORT_SYMBOL(elf_hwcap);
 
+pteval_t __supported_pte_mask __read_only;
+pmdval_t __supported_pmd_mask __read_only;
 
 #ifdef MULTI_CPU
-struct processor processor __read_mostly;
+struct processor processor;
 #endif
 #ifdef MULTI_TLB
-struct cpu_tlb_fns cpu_tlb __read_mostly;
+struct cpu_tlb_fns cpu_tlb __read_only;
 #endif
 #ifdef MULTI_USER
-struct cpu_user_fns cpu_user __read_mostly;
+struct cpu_user_fns cpu_user __read_only;
 #endif
 #ifdef MULTI_CACHE
-struct cpu_cache_fns cpu_cache __read_mostly;
+struct cpu_cache_fns cpu_cache __read_only;
 #endif
 #ifdef CONFIG_OUTER_CACHE
-struct outer_cache_fns outer_cache __read_mostly;
+struct outer_cache_fns outer_cache __read_only;
 EXPORT_SYMBOL(outer_cache);
 #endif
 
@@ -236,9 +239,13 @@ static int __get_cpu_architecture(void)
 		asm("mrc	p15, 0, %0, c0, c1, 4"
 		    : "=r" (mmfr0));
 		if ((mmfr0 & 0x0000000f) >= 0x00000003 ||
-		    (mmfr0 & 0x000000f0) >= 0x00000030)
+		    (mmfr0 & 0x000000f0) >= 0x00000030) {
 			cpu_arch = CPU_ARCH_ARMv7;
-		else if ((mmfr0 & 0x0000000f) == 0x00000002 ||
+			if ((mmfr0 & 0x0000000f) == 0x00000005 || (mmfr0 & 0x0000000f) == 0x00000004) {
+				__supported_pte_mask |= L_PTE_PXN;
+				__supported_pmd_mask |= PMD_PXNTABLE;
+			}
+		} else if ((mmfr0 & 0x0000000f) == 0x00000002 ||
 			 (mmfr0 & 0x000000f0) == 0x00000020)
 			cpu_arch = CPU_ARCH_ARMv6;
 		else
@@ -479,7 +486,7 @@ static void __init setup_processor(void)
 	__cpu_architecture = __get_cpu_architecture();
 
 #ifdef MULTI_CPU
-	processor = *list->proc;
+	memcpy((void *)&processor, list->proc, sizeof processor);
 #endif
 #ifdef MULTI_TLB
 	cpu_tlb = *list->tlb;
@@ -708,14 +715,6 @@ static int __init init_machine_late(void)
 late_initcall(init_machine_late);
 
 #ifdef CONFIG_KEXEC
-static inline unsigned long long get_total_mem(void)
-{
-	unsigned long total;
-
-	total = max_low_pfn - min_low_pfn;
-	return total << PAGE_SHIFT;
-}
-
 /**
  * reserve_crashkernel() - reserves memory are for crash kernel
  *
@@ -726,16 +725,14 @@ static inline unsigned long long get_total_mem(void)
 static void __init reserve_crashkernel(void)
 {
 	unsigned long long crash_size, crash_base;
-	unsigned long long total_mem;
 	int ret;
 
-	total_mem = get_total_mem();
-	ret = parse_crashkernel(boot_command_line, total_mem,
-				&crash_size, &crash_base);
+	ret = parse_crashkernel(boot_command_line, memblock_phys_mem_size(),
+ 				&crash_size, &crash_base);
 	if (ret)
 		return;
 
-	ret = reserve_bootmem(crash_base, crash_size, BOOTMEM_EXCLUSIVE);
+	ret = memblock_reserve(crash_base, crash_size);
 	if (ret < 0) {
 		printk(KERN_WARNING "crashkernel reservation failed - "
 		       "memory is in use (0x%lx)\n", (unsigned long)crash_base);
@@ -746,7 +743,7 @@ static void __init reserve_crashkernel(void)
 	       "for crashkernel (System RAM: %ldMB)\n",
 	       (unsigned long)(crash_size >> 20),
 	       (unsigned long)(crash_base >> 20),
-	       (unsigned long)(total_mem >> 20));
+		(unsigned long)(memblock_phys_mem_size() >> 20));
 
 	crashk_res.start = crash_base;
 	crashk_res.end = crash_base + crash_size - 1;
@@ -777,7 +774,6 @@ void __init hyp_mode_check(void)
 		pr_info("CPU: All CPU(s) started in SVC mode.\n");
 #endif
 }
-
 void __init setup_arch(char **cmdline_p)
 {
 	struct machine_desc *mdesc;
@@ -791,8 +787,8 @@ void __init setup_arch(char **cmdline_p)
 
 	setup_dma_zone(mdesc);
 
-	if (mdesc->restart_mode)
-		reboot_setup(&mdesc->restart_mode);
+	if (mdesc->reboot_mode != REBOOT_HARD)
+		reboot_mode = mdesc->reboot_mode;
 
 	init_mm.start_code = (unsigned long) _text;
 	init_mm.end_code   = (unsigned long) _etext;
@@ -818,9 +814,15 @@ void __init setup_arch(char **cmdline_p)
 	unflatten_device_tree();
 
 	arm_dt_init_cpu_maps();
+	psci_init();
 #ifdef CONFIG_SMP
 	if (is_smp()) {
-		smp_set_ops(mdesc->smp);
+		if (!mdesc->smp_init || !mdesc->smp_init()) {
+			if (psci_smp_available())
+				smp_set_ops(&psci_smp_ops);
+			else if (mdesc->smp)
+				smp_set_ops(mdesc->smp);
+		}
 		smp_init_cpus();
 	}
 #endif

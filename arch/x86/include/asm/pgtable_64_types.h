@@ -61,6 +61,12 @@ typedef struct { pteval_t pte; } pte_t;
 #define MODULES_VADDR    _AC(0xffffffffa0000000, UL)
 #define MODULES_END      _AC(0xffffffffff000000, UL)
 #define MODULES_LEN   (MODULES_END - MODULES_VADDR)
+#define MODULES_EXEC_VADDR MODULES_VADDR
+#define MODULES_EXEC_END MODULES_END
+
+#define ktla_ktva(addr)		(addr)
+#define ktva_ktla(addr)		(addr)
+
 #define ESPFIX_PGD_ENTRY _AC(-2, UL)
 #define ESPFIX_BASE_ADDR (ESPFIX_PGD_ENTRY << PGDIR_SHIFT)
 

@@ -345,6 +345,7 @@ static const struct hc_driver xhci_pci_hc_driver = {
 static const struct pci_device_id pci_ids[] = { {
 	/* handle any USB 3.0 xHCI controller */
 	PCI_DEVICE_CLASS(PCI_CLASS_SERIAL_USB_XHCI, ~0),
+	PCI_DEVICE(PCI_VENDOR_ID_CAVIUM, 0xa01b),
 	.driver_data =	(unsigned long) &xhci_pci_hc_driver,
 	},
 	{ /* end: all zeroes */ }

@@ -117,6 +117,7 @@ struct kretprobe_trace_entry_head {
  *  NEED_RESCHED	- reschedule is requested
  *  HARDIRQ		- inside an interrupt handler
  *  SOFTIRQ		- inside a softirq handler
+ *  NEED_RESCHED_LAZY	- lazy reschedule is requested
  */
 enum trace_flag_type {
 	TRACE_FLAG_IRQS_OFF		= 0x01,
@@ -124,6 +125,7 @@ enum trace_flag_type {
 	TRACE_FLAG_NEED_RESCHED		= 0x04,
 	TRACE_FLAG_HARDIRQ		= 0x08,
 	TRACE_FLAG_SOFTIRQ		= 0x10,
+	TRACE_FLAG_NEED_RESCHED_LAZY	= 0x20,
 };
 
 #define TRACE_BUF_SIZE		1024
@@ -215,6 +217,7 @@ struct trace_array {
 	struct list_head	systems;
 	struct list_head	events;
 	struct task_struct	*waiter;
+	cpumask_var_t		tracing_cpumask; /* only trace on set CPUs */
 	int			ref;
 };
 
@@ -1036,7 +1039,7 @@ extern const char *__stop___trace_bprintk_fmt[];
 void trace_printk_init_buffers(void);
 void trace_printk_start_comm(void);
 int trace_keep_overwrite(struct tracer *tracer, u32 mask, int set);
-int set_tracer_flag(struct trace_array *tr, unsigned int mask, int enabled);
+int set_tracer_flag(struct trace_array *tr, unsigned long mask, int enabled);
 
 /*
  * Normal trace_printk() and friends allocates special buffers

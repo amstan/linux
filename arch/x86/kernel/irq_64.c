@@ -44,7 +44,7 @@ static inline void stack_overflow_check(struct pt_regs *regs)
 	u64 estack_top, estack_bottom;
 	u64 curbase = (u64)task_stack_page(current);
 
-	if (user_mode_vm(regs))
+	if (user_mode(regs))
 		return;
 
 	if (regs->sp >= curbase + sizeof(struct thread_info) +
@@ -88,7 +88,7 @@ bool handle_irq(unsigned irq, struct pt_regs *regs)
 	return true;
 }
 
-
+#ifndef CONFIG_PREEMPT_RT_FULL
 extern void call_softirq(void);
 
 asmlinkage void do_softirq(void)
@@ -108,3 +108,4 @@ asmlinkage void do_softirq(void)
 	}
 	local_irq_restore(flags);
 }
+#endif

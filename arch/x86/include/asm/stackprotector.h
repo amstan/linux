@@ -47,7 +47,7 @@
  * head_32 for boot CPU and setup_per_cpu_areas() for others.
  */
 #define GDT_STACK_CANARY_INIT						\
-	[GDT_ENTRY_STACK_CANARY] = GDT_ENTRY_INIT(0x4090, 0, 0x18),
+	[GDT_ENTRY_STACK_CANARY] = GDT_ENTRY_INIT(0x4090, 0, 0x17),
 
 /*
  * Initialize the stackprotector canary value.
@@ -57,7 +57,7 @@
  */
 static __always_inline void boot_init_stack_canary(void)
 {
-	u64 canary;
+	u64 uninitialized_var(canary);
 	u64 tsc;
 
 #ifdef CONFIG_X86_64
@@ -68,8 +68,16 @@ static __always_inline void boot_init_stack_canary(void)
 	 * of randomness. The TSC only matters for very early init,
 	 * there it already has some randomness on most systems. Later
 	 * on during the bootup the random pool has true entropy too.
+	 *
+	 * For preempt-rt we need to weaken the randomness a bit, as
+	 * we can't call into the random generator from atomic context
+	 * due to locking constraints. We just leave canary
+	 * uninitialized and use the TSC based randomness on top of
+	 * it.
 	 */
+#ifndef CONFIG_PREEMPT_RT_FULL
 	get_random_bytes(&canary, sizeof(canary));
+#endif
 	tsc = __native_read_tsc();
 	canary += tsc + (tsc << 32UL);
 
@@ -112,7 +120,7 @@ static inline void setup_stack_canary_segment(int cpu)
 
 static inline void load_stack_canary_segment(void)
 {
-#ifdef CONFIG_X86_32
+#if defined(CONFIG_X86_32) && !defined(CONFIG_PAX_MEMORY_UDEREF)
 	asm volatile ("mov %0, %%gs" : : "r" (0));
 #endif
 }

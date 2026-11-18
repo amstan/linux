@@ -79,11 +79,11 @@ static struct cpufreq_driver centrino_driver;
 
 /* Computes the correct form for IA32_PERF_CTL MSR for a particular
    frequency/voltage operating point; frequency in MHz, volts in mV.
-   This is stored as "index" in the structure. */
+   This is stored as "driver_data" in the structure. */
 #define OP(mhz, mv)							\
 	{								\
 		.frequency = (mhz) * 1000,				\
-		.index = (((mhz)/100) << 8) | ((mv - 700) / 16)		\
+		.driver_data = (((mhz)/100) << 8) | ((mv - 700) / 16)		\
 	}
 
 /*
@@ -307,7 +307,7 @@ static unsigned extract_clock(unsigned msr, unsigned int cpu, int failsafe)
 		per_cpu(centrino_model, cpu)->op_points[i].frequency
 							!= CPUFREQ_TABLE_END;
 	     i++) {
-		if (msr == per_cpu(centrino_model, cpu)->op_points[i].index)
+		if (msr == per_cpu(centrino_model, cpu)->op_points[i].driver_data)
 			return per_cpu(centrino_model, cpu)->
 							op_points[i].frequency;
 	}
@@ -353,8 +353,11 @@ static int centrino_cpu_init(struct cpufreq_policy *policy)
 	    !cpu_has(cpu, X86_FEATURE_EST))
 		return -ENODEV;
 
-	if (cpu_has(cpu, X86_FEATURE_CONSTANT_TSC))
-		centrino_driver.flags |= CPUFREQ_CONST_LOOPS;
+	if (cpu_has(cpu, X86_FEATURE_CONSTANT_TSC)) {
+		pax_open_kernel();
+		*(u8 *)&centrino_driver.flags |= CPUFREQ_CONST_LOOPS;
+		pax_close_kernel();
+	}
 
 	if (policy->cpu != 0)
 		return -ENODEV;
@@ -501,7 +504,7 @@ static int centrino_target (struct cpufreq_policy *policy,
 			break;
 		}
 
-		msr = per_cpu(centrino_model, cpu)->op_points[newstate].index;
+		msr = per_cpu(centrino_model, cpu)->op_points[newstate].driver_data;
 
 		if (first_cpu) {
 			rdmsr_on_cpu(good_cpu, MSR_IA32_PERF_CTL, &oldmsr, &h);

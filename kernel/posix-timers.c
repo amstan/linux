@@ -122,7 +122,7 @@ static DEFINE_SPINLOCK(hash_lock);
  *	    which we beg off on and pass to do_sys_settimeofday().
  */
 
-static struct k_clock posix_clocks[MAX_CLOCKS];
+static struct k_clock *posix_clocks[MAX_CLOCKS];
 
 /*
  * These ones are defined below.
@@ -275,7 +275,7 @@ static int posix_get_tai(clockid_t which_clock, struct timespec *tp)
  */
 static __init int init_posix_timers(void)
 {
-	struct k_clock clock_realtime = {
+	static struct k_clock clock_realtime = {
 		.clock_getres	= hrtimer_get_res,
 		.clock_get	= posix_clock_realtime_get,
 		.clock_set	= posix_clock_realtime_set,
@@ -287,7 +287,7 @@ static __init int init_posix_timers(void)
 		.timer_get	= common_timer_get,
 		.timer_del	= common_timer_del,
 	};
-	struct k_clock clock_monotonic = {
+	static struct k_clock clock_monotonic = {
 		.clock_getres	= hrtimer_get_res,
 		.clock_get	= posix_ktime_get_ts,
 		.nsleep		= common_nsleep,
@@ -297,19 +297,19 @@ static __init int init_posix_timers(void)
 		.timer_get	= common_timer_get,
 		.timer_del	= common_timer_del,
 	};
-	struct k_clock clock_monotonic_raw = {
+	static struct k_clock clock_monotonic_raw = {
 		.clock_getres	= hrtimer_get_res,
 		.clock_get	= posix_get_monotonic_raw,
 	};
-	struct k_clock clock_realtime_coarse = {
+	static struct k_clock clock_realtime_coarse = {
 		.clock_getres	= posix_get_coarse_res,
 		.clock_get	= posix_get_realtime_coarse,
 	};
-	struct k_clock clock_monotonic_coarse = {
+	static struct k_clock clock_monotonic_coarse = {
 		.clock_getres	= posix_get_coarse_res,
 		.clock_get	= posix_get_monotonic_coarse,
 	};
-	struct k_clock clock_tai = {
+	static struct k_clock clock_tai = {
 		.clock_getres	= hrtimer_get_res,
 		.clock_get	= posix_get_tai,
 		.nsleep		= common_nsleep,
@@ -319,7 +319,7 @@ static __init int init_posix_timers(void)
 		.timer_get	= common_timer_get,
 		.timer_del	= common_timer_del,
 	};
-	struct k_clock clock_boottime = {
+	static struct k_clock clock_boottime = {
 		.clock_getres	= hrtimer_get_res,
 		.clock_get	= posix_get_boottime,
 		.nsleep		= common_nsleep,
@@ -497,6 +497,7 @@ static enum hrtimer_restart posix_timer_fn(struct hrtimer *timer)
 static struct pid *good_sigevent(sigevent_t * event)
 {
 	struct task_struct *rtn = current->group_leader;
+	int sig = event->sigev_signo;
 
 	if ((event->sigev_notify & SIGEV_THREAD_ID ) &&
 		(!(rtn = find_task_by_vpid(event->sigev_notify_thread_id)) ||
@@ -505,7 +506,8 @@ static struct pid *good_sigevent(sigevent_t * event)
 		return NULL;
 
 	if (((event->sigev_notify & ~SIGEV_THREAD_ID) != SIGEV_NONE) &&
-	    ((event->sigev_signo <= 0) || (event->sigev_signo > SIGRTMAX)))
+	    (sig <= 0 || sig > SIGRTMAX || sig_kernel_only(sig) ||
+	     sig_kernel_coredump(sig)))
 		return NULL;
 
 	return task_pid(rtn);
@@ -531,7 +533,7 @@ void posix_timers_register_clock(const clockid_t clock_id,
 		return;
 	}
 
-	posix_clocks[clock_id] = *new_clock;
+	posix_clocks[clock_id] = new_clock;
 }
 EXPORT_SYMBOL_GPL(posix_timers_register_clock);
 
@@ -577,9 +579,9 @@ static struct k_clock *clockid_to_kclock(const clockid_t id)
 		return (id & CLOCKFD_MASK) == CLOCKFD ?
 			&clock_posix_dynamic : &clock_posix_cpu;
 
-	if (id >= MAX_CLOCKS || !posix_clocks[id].clock_getres)
+	if (id >= MAX_CLOCKS || !posix_clocks[id] || !posix_clocks[id]->clock_getres)
 		return NULL;
-	return &posix_clocks[id];
+	return posix_clocks[id];
 }
 
 static int common_timer_create(struct k_itimer *new_timer)
@@ -597,7 +599,7 @@ SYSCALL_DEFINE3(timer_create, const clockid_t, which_clock,
 	struct k_clock *kc = clockid_to_kclock(which_clock);
 	struct k_itimer *new_timer;
 	int error, new_timer_id;
-	sigevent_t event;
+	sigevent_t event = { };
 	int it_id_set = IT_ID_NOT_SET;
 
 	if (!kc)
@@ -817,6 +819,20 @@ SYSCALL_DEFINE1(timer_getoverrun, timer_t, timer_id)
 	return overrun;
 }
 
+/*
+ * Protected by RCU!
+ */
+static void timer_wait_for_callback(struct k_clock *kc, struct k_itimer *timr)
+{
+#ifdef CONFIG_PREEMPT_RT_FULL
+	if (kc->timer_set == common_timer_set)
+		hrtimer_wait_for_timer(&timr->it.real.timer);
+	else
+		/* FIXME: Whacky hack for posix-cpu-timers */
+		schedule_timeout(1);
+#endif
+}
+
 /* Set a POSIX.1b interval timer. */
 /* timr->it_lock is taken. */
 static int
@@ -894,6 +910,7 @@ retry:
 	if (!timr)
 		return -EINVAL;
 
+	rcu_read_lock();
 	kc = clockid_to_kclock(timr->it_clock);
 	if (WARN_ON_ONCE(!kc || !kc->timer_set))
 		error = -EINVAL;
@@ -902,9 +919,12 @@ retry:
 
 	unlock_timer(timr, flag);
 	if (error == TIMER_RETRY) {
+		timer_wait_for_callback(kc, timr);
 		rtn = NULL;	// We already got the old time...
+		rcu_read_unlock();
 		goto retry;
 	}
+	rcu_read_unlock();
 
 	if (old_setting && !error &&
 	    copy_to_user(old_setting, &old_spec, sizeof (old_spec)))
@@ -942,10 +962,15 @@ retry_delete:
 	if (!timer)
 		return -EINVAL;
 
+	rcu_read_lock();
 	if (timer_delete_hook(timer) == TIMER_RETRY) {
 		unlock_timer(timer, flags);
+		timer_wait_for_callback(clockid_to_kclock(timer->it_clock),
+					timer);
+		rcu_read_unlock();
 		goto retry_delete;
 	}
+	rcu_read_unlock();
 
 	spin_lock(&current->sighand->siglock);
 	list_del(&timer->list);
@@ -971,8 +996,18 @@ static void itimer_delete(struct k_itimer *timer)
 retry_delete:
 	spin_lock_irqsave(&timer->it_lock, flags);
 
-	if (timer_delete_hook(timer) == TIMER_RETRY) {
+	/* On RT we can race with a deletion */
+	if (!timer->it_signal) {
 		unlock_timer(timer, flags);
+		return;
+	}
+
+	if (timer_delete_hook(timer) == TIMER_RETRY) {
+		rcu_read_lock();
+		unlock_timer(timer, flags);
+		timer_wait_for_callback(clockid_to_kclock(timer->it_clock),
+					timer);
+		rcu_read_unlock();
 		goto retry_delete;
 	}
 	list_del(&timer->list);

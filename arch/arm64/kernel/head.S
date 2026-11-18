@@ -22,6 +22,7 @@
 
 #include <linux/linkage.h>
 #include <linux/init.h>
+#include <linux/irqchip/arm-gic-v3.h>
 
 #include <asm/assembler.h>
 #include <asm/ptrace.h>
@@ -51,8 +52,11 @@
 	.globl	swapper_pg_dir
 	.equ	swapper_pg_dir, KERNEL_RAM_VADDR - SWAPPER_DIR_SIZE
 
-	.globl	idmap_pg_dir
-	.equ	idmap_pg_dir, swapper_pg_dir - IDMAP_DIR_SIZE
+	.globl  idmap_pg_dir
+	.equ    idmap_pg_dir, swapper_pg_dir - IDMAP_DIR_SIZE
+
+	.globl	swapper_pg_dir_pax
+	.equ	swapper_pg_dir_pax, idmap_pg_dir - SWAPPER_DIR_SIZE
 
 	.macro	pgtbl, ttb0, ttb1, phys
 	add	\ttb1, \phys, #TEXT_OFFSET - SWAPPER_DIR_SIZE
@@ -112,9 +116,22 @@
 	.quad	TEXT_OFFSET			// Image load offset from start of RAM
 	.quad	0				// reserved
 	.quad	0				// reserved
+	.quad	0				// reserved
+	.quad	0				// reserved
+	.quad	0				// reserved
+	.byte	0x41				// Magic number, "ARM\x64"
+	.byte	0x52
+	.byte	0x4d
+	.byte	0x64
+	.word	0				// reserved
 
 ENTRY(stext)
 	mov	x21, x0				// x21=FDT
+#ifdef CONFIG_CPU_BIG_ENDIAN
+	mrs	x1, sctlr_el2
+	orr	x1, x1, #(3 << 24)		// Set EE and EOE bits for Big-Endian
+	msr	sctlr_el2, x1
+#endif
 	bl	__calc_phys_offset		// x24=PHYS_OFFSET, x28=PHYS_OFFSET-PAGE_OFFSET
 	bl	el2_setup			// Drop to EL1
 	mrs	x22, midr_el1			// x22=cpuid
@@ -124,6 +141,7 @@ ENTRY(stext)
 	cbz	x23, __error_p			// invalid processor (x23=0)?
 	bl	__vet_fdt
 	bl	__create_page_tables		// x25=TTBR0, x26=TTBR1
+
 	/*
 	 * The following calls CPU specific code in a position independent
 	 * manner. See arch/arm64/mm/proc.S for details. x23 = base of
@@ -165,6 +183,23 @@ ENTRY(el2_setup)
 	msr	cnthctl_el2, x0
 	msr	cntvoff_el2, xzr		// Clear virtual offset
 
+#ifdef CONFIG_ARM_GIC_V3
+	/* GICv3 system register access */
+	mrs	x0, id_aa64pfr0_el1
+	ubfx	x0, x0, #24, #4
+	cmp	x0, #1
+	b.ne	3f
+
+	mrs_s	x0, ICC_SRE_EL2
+	orr	x0, x0, #ICC_SRE_EL2_SRE	// Set ICC_SRE_EL2.SRE==1
+	orr	x0, x0, #ICC_SRE_EL2_ENABLE	// Set ICC_SRE_EL2.Enable==1
+	msr_s	ICC_SRE_EL2, x0
+	isb					// Make sure SRE is now set
+	msr_s	ICH_HCR_EL2, xzr		// Reset ICC_HCR_EL2 to defaults
+
+3:
+#endif
+
 	/* Populate ID registers. */
 	mrs	x0, midr_el1
 	mrs	x1, mpidr_el1
@@ -174,13 +209,16 @@ ENTRY(el2_setup)
 	/* sctlr_el1 */
 	mov	x0, #0x0800			// Set/clear RES{1,0} bits
 	movk	x0, #0x30d0, lsl #16
+#ifdef CONFIG_CPU_BIG_ENDIAN
+	orr	x0, x0, #(3 << 24)		// Set EE and EOE bit for Big-Endian
+#endif
 	msr	sctlr_el1, x0
 
 	/* Coprocessor traps. */
 	mov	x0, #0x33ff
 	msr	cptr_el2, x0			// Disable copro. traps to EL2
 
-#ifdef CONFIG_COMPAT
+#ifdef CONFIG_AARCH32_EL0
 	msr	hstr_el2, xzr			// Disable CP15 traps to EL2
 #endif
 
@@ -188,7 +226,7 @@ ENTRY(el2_setup)
 	msr	vttbr_el2, xzr
 
 	/* Hypervisor stub */
-	adr	x0, __hyp_stub_vectors
+	adrp	x0, __hyp_stub_vectors
 	msr	vbar_el2, x0
 
 	/* spsr */
@@ -217,7 +255,6 @@ ENTRY(__boot_cpu_mode)
 	.quad	PAGE_OFFSET
 
 #ifdef CONFIG_SMP
-	.pushsection    .smp.pen.text, "ax"
 	.align	3
 1:	.quad	.
 	.quad	secondary_holding_pen_release
@@ -227,11 +264,18 @@ ENTRY(__boot_cpu_mode)
 	 * cores are held until we're ready for them to initialise.
 	 */
 ENTRY(secondary_holding_pen)
+#ifdef CONFIG_CPU_BIG_ENDIAN
+	mrs	x1, sctlr_el2
+	orr	x1, x1, #(1 << 25)		// Set EE bit for Big-Endian
+	msr	sctlr_el2, x1
+#endif
 	bl	__calc_phys_offset		// x24=phys offset
 	bl	el2_setup			// Drop to EL1
+	
+	/* Calculate the CPU number */
 	mrs	x0, mpidr_el1
 	ldr     x1, =MPIDR_HWID_BITMASK
-	and	x0, x0, x1
+
 	adr	x1, 1b
 	ldp	x2, x3, [x1]
 	sub	x1, x1, x2
@@ -242,7 +286,33 @@ pen:	ldr	x4, [x3]
 	wfe
 	b	pen
 ENDPROC(secondary_holding_pen)
-	.popsection
+
+	/*
+	 * Secondary entry point that jumps straight into the kernel. Only to
+	 * be used where CPUs are brought online dynamically by the kernel.
+	 */
+ENTRY(secondary_entry)
+#ifdef CONFIG_CPU_BIG_ENDIAN
+	mrs	x1, sctlr_el2
+	orr	x1, x1, #(1 << 25)		// Set EE bit for Big-Endian
+	msr	sctlr_el2, x1
+#endif
+	bl	__calc_phys_offset		// x2=phys offset
+	bl	el2_setup			// Drop to EL1
+
+	/* Calculate the CPU number */
+	mrs	x0, mpidr_el1
+	ldr     x1, =MPIDR_HWID_BITMASK
+	and	x0, x0, x1
+	and	x1, x0, #0xf
+	lsr	x0, x0, #8
+	add	x0, x1, x0, lsl #4
+	
+	mov	x5, #0x7			// SRE | DFB | DIB
+	msr_s	ICC_SRE_EL1, x5			// ICC_SRE_EL1
+
+	b	secondary_startup
+ENDPROC(secondary_entry)
 
 ENTRY(secondary_startup)
 	/*

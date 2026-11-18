@@ -674,6 +674,7 @@ static int do_dentry_open(struct file *f,
 	}
 
 	f->f_mapping = inode->i_mapping;
+	file_sb_list_add(f, inode->i_sb);
 
 	if (unlikely(f->f_mode & FMODE_PATH)) {
 		f->f_op = &empty_fops;
@@ -708,6 +709,7 @@ static int do_dentry_open(struct file *f,
 
 cleanup_all:
 	fops_put(f->f_op);
+	file_sb_list_del(f);
 	if (f->f_mode & FMODE_WRITE) {
 		if (!special_file(inode->i_mode)) {
 			/*
@@ -932,6 +934,12 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 			} else {
 				fsnotify_open(f);
 				fd_install(fd, f);
+#ifdef CONFIG_BLK_DEV_REMOVE
+				if (S_ISBLK(f->f_dentry->d_inode->i_mode)) {
+					bdremove_insertfd(current, fd,
+					  f->f_dentry->d_inode->i_bdev->bd_dev);
+				}
+#endif
 			}
 		}
 		putname(tmp);
@@ -981,6 +989,22 @@ int filp_close(struct file *filp, fl_owner_t id)
 		printk(KERN_ERR "VFS: Close: file count is 0\n");
 		return 0;
 	}
+
+#ifdef CONFIG_FUMOUNT
+	spin_lock(&filp->f_lock);
+	if (filp->f_mode & FMODE_CLOSED) {
+		spin_unlock(&filp->f_lock);
+		fput(filp);
+		return 0;
+	}
+	/*
+	 * Only disable this if closed by fumount, since it closes
+	 * everything.
+	 */
+	if (!id)
+		filp->f_mode |= FMODE_CLOSED;
+	spin_unlock(&filp->f_lock);
+#endif
 
 	if (filp->f_op && filp->f_op->flush)
 		retval = filp->f_op->flush(filp, id);

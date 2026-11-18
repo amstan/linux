@@ -79,6 +79,8 @@ static int debug = 3;
 module_param(debug, int, 0);
 MODULE_PARM_DESC(debug, "Debug level (0=none,...,16=all)");
 
+static int use_dma;
+
 struct smsc911x_data;
 
 struct smsc911x_ops {
@@ -152,6 +154,20 @@ struct smsc911x_data {
 
 /* Easy access to information */
 #define __smsc_shift(pdata, reg) ((reg) << ((pdata)->config.shift))
+
+#ifdef CONFIG_ARCH_THUNDER_EMULATOR
+static inline void check_dma_capability(unsigned int idrev)
+{
+	use_dma = (idrev & ID_CAVIUM_DMA) ? 1 : 0;
+	printk(KERN_INFO "SMSC911x Driver is %susing DMA\n",use_dma? "" : "not ");
+}
+#else
+#define check_dma_capability(x) 
+#endif
+
+#ifndef writeq
+#define writeq(v,c)
+#endif
 
 static inline u32 __smsc911x_reg_read(struct smsc911x_data *pdata, u32 reg)
 {
@@ -1096,6 +1112,8 @@ static int smsc911x_mii_init(struct platform_device *pdev,
 		break;
 	}
 
+	check_dma_capability(pdata->idrev);
+
 	if (!pdata->using_extphy) {
 		/* Mask all PHYs except ID 1 (internal) */
 		pdata->mii_bus->phy_mask = ~(1 << 1);
@@ -1267,8 +1285,15 @@ static int smsc911x_poll(struct napi_struct *napi, int budget)
 			break;
 		}
 
-		pdata->ops->rx_readfifo(pdata,
-				 (unsigned int *)skb->data, pktwords);
+		if (use_dma) {
+			writeq((unsigned long)virt_to_phys(skb->data),
+					pdata->ioaddr + 0xc8);
+			// By the time this returns, the packet has been dma'ed
+			// into the SKB.
+		} else {
+			pdata->ops->rx_readfifo(pdata,
+				 	(unsigned int *)skb->data, pktwords);
+		}
 
 		/* Align IP on 16B boundary */
 		skb_reserve(skb, NET_IP_ALIGN);
@@ -1659,8 +1684,15 @@ static int smsc911x_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	tx_cmd_a |= TX_CMD_A_FIRST_SEG_ | TX_CMD_A_LAST_SEG_;
 	tx_cmd_a |= (unsigned int)skb->len;
 
+	if(use_dma) {
+		writeq(virt_to_phys((void *)((ulong)skb->data & (~0x3))),
+				pdata->ioaddr + 0xc0);
+	}
 	tx_cmd_b = ((unsigned int)skb->len) << 16;
 	tx_cmd_b |= (unsigned int)skb->len;
+	if(use_dma) {
+		tx_cmd_b |= (1u << 15);		// Trigger DMA
+	}
 
 	smsc911x_reg_write(pdata, TX_DATA_FIFO, tx_cmd_a);
 	smsc911x_reg_write(pdata, TX_DATA_FIFO, tx_cmd_b);
@@ -1670,8 +1702,10 @@ static int smsc911x_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	wrsz += (u32)((ulong)skb->data & 0x3);
 	wrsz >>= 2;
 
-	pdata->ops->tx_writefifo(pdata, (unsigned int *)bufp, wrsz);
-	freespace -= (skb->len + 32);
+	if (!use_dma) {
+		pdata->ops->tx_writefifo(pdata, (unsigned int *)bufp, wrsz);
+		freespace -= (skb->len + 32);
+	}
 	skb_tx_timestamp(skb);
 	dev_kfree_skb(skb);
 

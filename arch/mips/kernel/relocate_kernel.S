@@ -26,6 +26,11 @@ process_entry:
 	PTR_L		s2, (s0)
 	PTR_ADD		s0, s0, SZREG
 
+	/* In case of kdump/crash kernel, indirection page is not populated
+	* as the kernel is directly copied to reserved location
+	*/
+	beq             s2, zero, done
+
 	/* destination page */
 	and		s3, s2, 0x1
 	beq		s3, zero, 1f

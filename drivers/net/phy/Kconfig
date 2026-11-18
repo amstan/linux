@@ -24,11 +24,16 @@ config AMD_PHY
 	---help---
 	  Currently supports the am79c874
 
+config AQUANTIA_PHY
+	tristate "Driver for Aquantia PHYs"
+	help
+	  Currently supports the aqr105 PHY.
+
 config MARVELL_PHY
 	tristate "Drivers for Marvell PHYs"
 	---help---
 	  Currently has a driver for the 88E1011S
-	
+
 config DAVICOM_PHY
 	tristate "Drivers for Davicom PHYs"
 	---help---
@@ -54,6 +59,18 @@ config VITESSE_PHY
         ---help---
           Currently supports the vsc8244
 
+config VSC848X_PHY
+	tristate "Drivers for the Vitesse 10G PHYs"
+	depends on OF_MEMORY_ACCESSOR
+	help
+	  Driver for Vitesse vsc848x single, dual and quad 10G PHY devices.
+	  Currently supports the vsc8488, vsc8486 and vsc8484 chips
+
+config TLK10232_PHY
+	tristate "Drivers for the TI tlk10232 dual 10G PHY"
+	help
+	  Driver for TI tlk10232 dual 10G PHY device.
+
 config SMSC_PHY
 	tristate "Drivers for SMSC PHYs"
 	---help---
@@ -75,6 +92,17 @@ config BCM87XX_PHY
 	tristate "Driver for Broadcom BCM8706 and BCM8727 PHYs"
 	help
 	  Currently supports the BCM8706 and BCM8727 10G Ethernet PHYs.
+
+config CS4318_PHY
+	tristate "Driver for Cortina cs4318 quad-10G Ethernet PHY"
+	help
+	  Currently supports only the Cortina cs4318 PHY.  This may be
+	  configured as either a quad-RXAUI or dual-XAUI device.
+
+config MARVELL_88X3120_PHY
+	tristate "Driver for Marvell 88X3120/88X3140 10GBase-T PHYs"
+	help
+	  Currently supports the 88X3120 PHY.
 
 config ICPLUS_PHY
 	tristate "Drivers for ICPlus PHYs"
@@ -106,6 +134,17 @@ config MICREL_PHY
 	---help---
 	  Supports the KSZ9021, VSC8201, KS8001 PHYs.
 
+config QCA833X_PHY
+	tristate "Drivers for Qualcomm/Atheros QCA833X PHYs"
+	depends on CAVIUM_OCTEON_SOC
+	---help---
+	  Presents a Qualcomm/Atheros QCA8334/5/6/7 multi-port PHY as a
+	  single SGMII device. Does not enable advanced features, such as
+	  packet header reporting ingress port / steering egress port,
+	  or NAT.
+	  Link-state transitions require PSC cycling to undo hang,
+	  which is only implemented for CAVIUM_OCTEON_SOC.
+
 config FIXED_PHY
 	bool "Driver for MDIO Bus/PHY emulation with fixed speed/link PHYs"
 	depends on PHYLIB=y
@@ -135,7 +174,7 @@ config MDIO_GPIO
 
 config MDIO_OCTEON
 	tristate "Support for MDIO buses on Octeon SOCs"
-	depends on  CPU_CAVIUM_OCTEON
+	depends on CAVIUM_OCTEON_SOC
 	default y
 	help
 
@@ -143,6 +182,17 @@ config MDIO_OCTEON
 	  It is required by the Octeon Ethernet device drivers.
 
 	  If in doubt, say Y.
+
+config MDIO_THUNDERX
+	tristate "Support for MDIO buses on ThunderX SOCs"
+	depends on ARCH_THUNDER
+	default n
+	help
+
+	  This module provides a driver for the ThunderX MDIO busses.
+	  It is required by the ThunderX Ethernet device drivers.
+
+	  If in doubt, say N.
 
 config MDIO_BUS_MUX
 	tristate

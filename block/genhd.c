@@ -469,21 +469,24 @@ static char *bdevt_str(dev_t devt, char *buf)
 
 /*
  * Register device numbers dev..(dev+range-1)
- * range must be nonzero
+ * Noop if @range is zero.
  * The hash chain is sorted on range, so that subranges can override.
  */
 void blk_register_region(dev_t devt, unsigned long range, struct module *module,
 			 struct kobject *(*probe)(dev_t, int *, void *),
 			 int (*lock)(dev_t, void *), void *data)
 {
-	kobj_map(bdev_map, devt, range, module, probe, lock, data);
+	if (range)
+		kobj_map(bdev_map, devt, range, module, probe, lock, data);
 }
 
 EXPORT_SYMBOL(blk_register_region);
 
+/* undo blk_register_region(), noop if @range is zero */
 void blk_unregister_region(dev_t devt, unsigned long range)
 {
-	kobj_unmap(bdev_map, devt, range);
+	if (range)
+		kobj_unmap(bdev_map, devt, range);
 }
 
 EXPORT_SYMBOL(blk_unregister_region);
@@ -988,6 +991,9 @@ static DEVICE_ATTR(discard_alignment, S_IRUGO, disk_discard_alignment_show,
 static DEVICE_ATTR(capability, S_IRUGO, disk_capability_show, NULL);
 static DEVICE_ATTR(stat, S_IRUGO, part_stat_show, NULL);
 static DEVICE_ATTR(inflight, S_IRUGO, part_inflight_show, NULL);
+#ifdef CONFIG_BLK_DEV_REMOVE
+static DEVICE_ATTR(remove, S_IWUSR, NULL, disk_remove_store);
+#endif
 #ifdef CONFIG_FAIL_MAKE_REQUEST
 static struct device_attribute dev_attr_fail =
 	__ATTR(make-it-fail, S_IRUGO|S_IWUSR, part_fail_show, part_fail_store);
@@ -1014,6 +1020,9 @@ static struct attribute *disk_attrs[] = {
 #endif
 #ifdef CONFIG_FAIL_IO_TIMEOUT
 	&dev_attr_fail_timeout.attr,
+#endif
+#ifdef CONFIG_BLK_DEV_REMOVE
+       &dev_attr_remove.attr,
 #endif
 	NULL
 };

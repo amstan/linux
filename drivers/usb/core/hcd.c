@@ -1526,7 +1526,7 @@ int usb_hcd_submit_urb (struct urb *urb, gfp_t mem_flags)
 	 */
 	usb_get_urb(urb);
 	atomic_inc(&urb->use_count);
-	atomic_inc(&urb->dev->urbnum);
+	atomic_inc_unchecked(&urb->dev->urbnum);
 	usbmon_urb_submit(&hcd->self, urb);
 
 	/* NOTE requirements on root-hub callers (usbfs and the hub
@@ -1553,7 +1553,7 @@ int usb_hcd_submit_urb (struct urb *urb, gfp_t mem_flags)
 		urb->hcpriv = NULL;
 		INIT_LIST_HEAD(&urb->urb_list);
 		atomic_dec(&urb->use_count);
-		atomic_dec(&urb->dev->urbnum);
+		atomic_dec_unchecked(&urb->dev->urbnum);
 		if (atomic_read(&urb->reject))
 			wake_up(&usb_kill_urb_queue);
 		usb_put_urb(urb);
@@ -2223,7 +2223,7 @@ irqreturn_t usb_hcd_irq (int irq, void *__hcd)
 	 * when the first handler doesn't use it.  So let's just
 	 * assume it's never used.
 	 */
-	local_irq_save(flags);
+	local_irq_save_nort(flags);
 
 	if (unlikely(HCD_DEAD(hcd) || !HCD_HW_ACCESSIBLE(hcd)))
 		rc = IRQ_NONE;
@@ -2232,7 +2232,7 @@ irqreturn_t usb_hcd_irq (int irq, void *__hcd)
 	else
 		rc = IRQ_HANDLED;
 
-	local_irq_restore(flags);
+	local_irq_restore_nort(flags);
 	return rc;
 }
 EXPORT_SYMBOL_GPL(usb_hcd_irq);

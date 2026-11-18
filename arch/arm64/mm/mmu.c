@@ -301,9 +301,139 @@ void __iomem * __init early_io_map(phys_addr_t phys, unsigned long virt)
 }
 #endif
 
+#ifdef CONFIG_PAX_KERNEXEC
+static void __init alloc_init_pmd_pax(pud_t *pud, unsigned long addr,
+				  unsigned long end, phys_addr_t phys)
+{
+	pmd_t *pmd;
+	unsigned long next;
+
+	pmd = pmd_offset(pud, addr);
+	do {
+		next = pmd_addr_end(addr, end);
+		set_pmd(pmd, __pmd(phys | prot_sect_kernel));
+		phys += next - addr;
+	} while (pmd++, addr = next, addr != end);
+}
+
+static void __init alloc_init_pud_pax(pgd_t *pgd, unsigned long addr,
+				  unsigned long end, unsigned long phys)
+{
+	pud_t *pud = pud_offset(pgd, addr);
+	unsigned long next;
+
+	do {
+		next = pud_addr_end(addr, end);
+		alloc_init_pmd_pax(pud, addr, next, phys);
+		phys += next - addr;
+	} while (pud++, addr = next, addr != end);
+}
+
+/*
+ * Create the page directory entries and any necessary page tables for the
+ * mapping specified by 'md'.
+ */
+static void __init create_mapping_pax(phys_addr_t phys, unsigned long virt,
+				  phys_addr_t size)
+{
+	unsigned long addr, length, end, next;
+	pgd_t *pgd;
+
+	if (virt < VMALLOC_START) {
+		pr_warning("BUG: not creating mapping for 0x%016llx  \
+				at 0x%016lx - outside kernel range\n",
+			   phys, virt);
+		return;
+	}
+
+	addr = virt & PAGE_MASK;
+	length = PAGE_ALIGN(size + (virt & ~PAGE_MASK));
+
+	pgd = pgd_offset_pax(addr);
+
+	end = addr + length;
+	do {
+		next = pgd_addr_end(addr, end);
+		alloc_init_pud_pax(pgd, addr, next, phys);
+		phys += next - addr;
+	} while (pgd++, addr = next, addr != end);
+}
+
+static void __init clone_page_table_secondary(void) 
+{
+	struct memblock_region *reg;
+	pgd_t *dst = swapper_pg_dir_pax;
+	pgd_t *src = swapper_pg_dir;
+	pgd_t *pgd = pgd_offset_pax(PAGE_OFFSET);
+	pmd_t *pmd;
+	int count;
+	pmdval_t prot_sect_kernel_tmp;
+
+	for (count = 0; count < PTRS_PER_PGD ; count++)
+		*(dst + count) = *(src + count);
+
+	pmd = pgd + PTRS_PER_PGD;
+	for (count = 0; count < PTRS_PER_PMD ; count++)
+		*(pmd + count) = 0;
+
+	set_pgd(pgd, __pgd(__pa(pmd) | 0x3));
+
+	prot_sect_kernel_tmp = prot_sect_kernel;
+	for_each_memblock(memory, reg) {
+		
+		phys_addr_t start = reg->base;
+		phys_addr_t end = start + reg->size;
+
+		if (start >= end)
+			break;
+
+		if (__phys_to_virt(start) <= (unsigned long)_text && 
+				((unsigned long)_end < __phys_to_virt(end))) {
+			
+			/* Making _text and init sections RWX */
+			prot_sect_kernel &= ~PMD_SECT_PXN;
+			prot_sect_kernel &= ~PMD_SECT_UXN;
+			
+			create_mapping_pax( start, __phys_to_virt(start),
+					(phys_addr_t)(_stext -
+						__phys_to_virt(start)));
+			create_mapping_pax(__pa(_stext), (unsigned long)_stext,
+					(phys_addr_t)(__init_begin - _stext));
+			create_mapping_pax(
+					__pa(__init_begin), 
+					(unsigned long)__init_begin,
+					(phys_addr_t)(_sdata - __init_begin));
+
+			/* Making all other mem-blocks RW */
+			prot_sect_kernel |= PMD_SECT_PXN;
+			prot_sect_kernel |= PMD_SECT_UXN;
+			create_mapping_pax(__pa(_sdata), 
+					(unsigned long)_sdata, 
+					end - __pa(_sdata));
+		}
+	}
+	
+	prot_sect_kernel = prot_sect_kernel_tmp;
+}
+#endif
+
 static void __init map_mem(void)
 {
 	struct memblock_region *reg;
+
+#ifdef CONFIG_PAX_KERNEXEC
+	pmdval_t prot_sect_kernel_tmp = prot_sect_kernel;
+#endif
+	
+	/*
+	 * Temporarily limit the memblock range. We need to do this as
+	 * create_mapping requires puds, pmds and ptes to be allocated from
+	 * memory addressable from the initial direct kernel mapping.
+	 *
+	 * The initial direct kernel mapping, located at swapper_pg_dir,
+	 * gives us PGDIR_SIZE memory starting from PHYS_OFFSET (aligned).
+	 */
+	memblock_set_current_limit((PHYS_OFFSET & PGDIR_MASK) + PGDIR_SIZE);
 
 	/* map all the memory banks */
 	for_each_memblock(memory, reg) {
@@ -313,8 +443,40 @@ static void __init map_mem(void)
 		if (start >= end)
 			break;
 
+#ifdef CONFIG_PAX_KERNEXEC
+		if (__phys_to_virt(start) <= (unsigned long)_text &&
+				((unsigned long)_end < __phys_to_virt(end))) {
+			
+			/* Making _text and init sections RWX */
+			prot_sect_kernel &= ~PMD_SECT_PXN;
+			prot_sect_kernel &= ~PMD_SECT_UXN;
+			create_mapping( start, __phys_to_virt(start), 
+					(phys_addr_t)(_stext -
+						__phys_to_virt(start)));
+			create_mapping(__pa(_stext), 
+					(unsigned long)_stext, 
+					(phys_addr_t)(__init_begin - _stext));
+			create_mapping(__pa(__init_begin), 
+					(unsigned long)__init_begin,
+					(phys_addr_t)(_sdata - __init_begin));
+
+			/* Making all other mem-blocks RW */
+			prot_sect_kernel |= PMD_SECT_PXN;
+			prot_sect_kernel |= PMD_SECT_UXN;
+			create_mapping(__pa(_sdata), 
+					(unsigned long)_sdata, 
+					end - __pa(_sdata));
+		}
+#else
 		create_mapping(start, __phys_to_virt(start), end - start);
+#endif
 	}
+
+#ifdef CONFIG_PAX_KERNEXEC
+	prot_sect_kernel = prot_sect_kernel_tmp;
+#endif
+	/* Limit no longer required. */
+	memblock_set_current_limit(MEMBLOCK_ALLOC_ANYWHERE);
 }
 
 /*
@@ -324,12 +486,6 @@ static void __init map_mem(void)
 void __init paging_init(void)
 {
 	void *zero_page;
-
-	/*
-	 * Maximum PGDIR_SIZE addressable via the initial direct kernel
-	 * mapping in swapper_pg_dir.
-	 */
-	memblock_set_current_limit((PHYS_OFFSET & PGDIR_MASK) + PGDIR_SIZE);
 
 	init_mem_pgprot();
 	map_mem();
@@ -345,6 +501,10 @@ void __init paging_init(void)
 	zero_page = early_alloc(PAGE_SIZE);
 
 	bootmem_init();
+
+#ifdef CONFIG_PAX_KERNEXEC
+	clone_page_table_secondary();
+#endif
 
 	empty_zero_page = virt_to_page(zero_page);
 

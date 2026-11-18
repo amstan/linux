@@ -28,8 +28,21 @@
    the loader.  We need to make sure that it is out of the way of the program
    that it will "exec", and that there is sufficient room for the brk.  */
 
+#ifdef CONFIG_PAX_ASLR
+#define ELF_ET_DYN_BASE		(0x20000000)
+#define PAX_ELF_ET_DYN_BASE	(0x10000000UL)
+
+#ifdef __powerpc64__
+#define PAX_DELTA_MMAP_LEN	(is_32bit_task() ? 16 : 28)
+#define PAX_DELTA_STACK_LEN	(is_32bit_task() ? 16 : 28)
+#else
+#define PAX_DELTA_MMAP_LEN	15
+#define PAX_DELTA_STACK_LEN	15
+#endif
+#else
 extern unsigned long randomize_et_dyn(unsigned long base);
 #define ELF_ET_DYN_BASE		(randomize_et_dyn(0x20000000))
+#endif
 
 /*
  * Our registers are always unsigned longs, whether we're a 32 bit
@@ -123,9 +136,10 @@ extern int arch_setup_additional_pages(struct linux_binprm *bprm,
 	(0x7ff >> (PAGE_SHIFT - 12)) : \
 	(0x3ffff >> (PAGE_SHIFT - 12)))
 
+#ifndef CONFIG_PAX_ASLR
 extern unsigned long arch_randomize_brk(struct mm_struct *mm);
 #define arch_randomize_brk arch_randomize_brk
-
+#endif
 
 #ifdef CONFIG_SPU_BASE
 /* Notes used in ET_CORE. Note name is "SPU/<fd>/<filename>". */

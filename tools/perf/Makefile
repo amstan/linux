@@ -71,6 +71,7 @@ AR = $(CROSS_COMPILE)ar
 ifeq ($(ARCH),i386)
 	override ARCH := x86
 	NO_PERF_REGS := 0
+	ARCH_SUPPORTS_LIBUNWIND := 1
 	LIBUNWIND_LIBS = -lunwind -lunwind-x86
 endif
 ifeq ($(ARCH),x86_64)
@@ -85,7 +86,21 @@ ifeq ($(ARCH),x86_64)
 		ARCH_INCLUDE = ../../arch/x86/lib/memcpy_64.S ../../arch/x86/lib/memset_64.S
 	endif
 	NO_PERF_REGS := 0
+	ARCH_SUPPORTS_LIBUNWIND := 1
 	LIBUNWIND_LIBS = -lunwind -lunwind-x86_64
+endif
+
+# Additional ARCH settings for ARM
+ifeq ($(ARCH),arm)
+	ARM_ARCH ?= 7
+	ALL_CFLAGS= -D__arm_arch__=$(ARM_ARCH)
+endif
+
+# Additional ARCH settings for MIPS
+ifeq ($(ARCH),mips)
+	NO_PERF_REGS := 0
+	ARCH_SUPPORTS_LIBUNWIND := 1
+	LIBUNWIND_LIBS = -lunwind -lunwind-mips
 endif
 
 # Treat warnings as errors unless directed not to
@@ -112,7 +127,7 @@ endif
 
 CFLAGS = -fno-omit-frame-pointer -ggdb3 -funwind-tables -Wall -Wextra -std=gnu99 $(CFLAGS_WERROR) $(CFLAGS_OPTIMIZE) $(EXTRA_WARNINGS) $(EXTRA_CFLAGS) $(PARSER_DEBUG_CFLAGS)
 EXTLIBS = -lpthread -lrt -lelf -lm
-ALL_CFLAGS = $(CFLAGS) -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE
+ALL_CFLAGS += $(CFLAGS) -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE
 ALL_LDFLAGS = $(LDFLAGS)
 STRIP ?= strip
 
@@ -188,7 +203,7 @@ endif
 
 ifndef PERF_DEBUG
 	ifeq ($(call try-cc,$(SOURCE_HELLO),$(CFLAGS) -D_FORTIFY_SOURCE=2,-D_FORTIFY_SOURCE=2),y)
-		CFLAGS := $(CFLAGS) -D_FORTIFY_SOURCE=2
+		CFLAGS := $(CFLAGS) -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2
 	endif
 endif
 
@@ -606,8 +621,7 @@ else
 endif # SOURCE_LIBELF
 endif # NO_LIBELF
 
-# There's only x86 (both 32 and 64) support for CFI unwind so far
-ifneq ($(ARCH),x86)
+ifndef ARCH_SUPPORTS_LIBUNWIND
 	NO_LIBUNWIND := 1
 endif
 
@@ -854,10 +868,8 @@ else
 endif
 
 ifeq ($(NO_PERF_REGS),0)
-	ifeq ($(ARCH),x86)
-		LIB_H += arch/x86/include/perf_regs.h
-	endif
 	BASIC_CFLAGS += -DHAVE_PERF_REGS
+	LIB_H += arch/$(ARCH)/include/perf_regs.h
 endif
 
 ifndef NO_STRLCPY

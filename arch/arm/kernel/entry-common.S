@@ -10,17 +10,45 @@
 
 #include <asm/unistd.h>
 #include <asm/ftrace.h>
+#include <asm/domain.h>
 #include <asm/unwind.h>
+
+#include "entry-header.S"
 
 #ifdef CONFIG_NEED_RET_TO_USER
 #include <mach/entry-macro.S>
 #else
 	.macro  arch_ret_to_user, tmp1, tmp2
+#if defined(CONFIG_PAX_KERNEXEC) || defined(CONFIG_PAX_MEMORY_UDEREF)
+	@ save regs
+	stmdb	sp!, {r1, r2}
+        @ read DACR from cpu_domain into r1
+        mov     r2, sp
+        @ assume 8K pages, since we have to split the immediate in two
+        bic     r2, r2, #(0x1fc0)
+        bic     r2, r2, #(0x3f)
+        ldr     r1, [r2, #TI_CPU_DOMAIN]
+#ifdef CONFIG_PAX_KERNEXEC
+        @ set type of DOMAIN_KERNEL to DOMAIN_KERNELCLIENT
+        bic     r1, r1, #(domain_val(DOMAIN_KERNEL, 3))
+        orr     r1, r1, #(domain_val(DOMAIN_KERNEL, DOMAIN_KERNELCLIENT))
+#endif
+#ifdef CONFIG_PAX_MEMORY_UDEREF
+        @ set current DOMAIN_USER to DOMAIN_UDEREF
+        bic     r1, r1, #(domain_val(DOMAIN_USER, 3))
+        orr     r1, r1, #(domain_val(DOMAIN_USER, DOMAIN_UDEREF))
+#endif
+        @ write r1 to current_thread_info()->cpu_domain
+        str     r1, [r2, #TI_CPU_DOMAIN]
+        @ write r1 to DACR
+        mcr     p15, 0, r1, c3, c0, 0
+        @ instruction sync
+        instr_sync
+	@ restore regs
+	ldmia	sp!, {r1, r2}
+#endif
 	.endm
 #endif
-
-#include "entry-header.S"
-
 
 	.align	5
 /*
@@ -32,6 +60,11 @@ ret_fast_syscall:
  UNWIND(.fnstart	)
  UNWIND(.cantunwind	)
 	disable_irq				@ disable interrupts
+#ifdef CONFIG_MICROSTATE_ACCT
+	stmdb	sp!,{r0}
+	bl	msa_user
+	ldmia	sp!,{r0}
+#endif
 	ldr	r1, [tsk, #TI_FLAGS]		@ re-check for syscall tracing
 	tst	r1, #_TIF_SYSCALL_WORK
 	bne	__sys_trace_return
@@ -352,6 +385,7 @@ ENDPROC(ftrace_stub)
 
 	.align	5
 ENTRY(vector_swi)
+
 	sub	sp, sp, #S_FRAME_SIZE
 	stmia	sp, {r0 - r12}			@ Calling r0 - r12
  ARM(	add	r8, sp, #S_PC		)
@@ -391,9 +425,7 @@ ENTRY(vector_swi)
 #else
  USER(	ldr	r10, [lr, #-4]		)	@ get SWI instruction
 #endif
-#ifdef CONFIG_CPU_ENDIAN_BE8
-	rev	r10, r10			@ little endian instruction
-#endif
+ ARM_BE8(rev	r10, r10)			@ little endian instruction
 
 #elif defined(CONFIG_AEABI)
 
@@ -410,6 +442,12 @@ ENTRY(vector_swi)
 	/* Legacy ABI only. */
  USER(	ldr	scno, [lr, #-4]		)	@ get SWI instruction
 #endif
+
+	/*
+	 * do this here to avoid a performance hit of wrapping the code above
+	 * that directly dereferences userland to parse the SWI instruction
+	 */
+	pax_enter_kernel_user
 
 	adr	tbl, sys_call_table		@ load syscall table pointer
 
@@ -432,6 +470,11 @@ local_restart:
 	ldr	r10, [tsk, #TI_FLAGS]		@ check for syscall tracing
 	stmdb	sp!, {r4, r5}			@ push fifth and sixth args
 
+#ifdef CONFIG_MICROSTATE_ACCT
+	bl	msa_kernel
+	add	r0, sp, #S_R0 + S_OFF		@ pointer to regs
+	ldmia	r0, {r0 - r3}			@ have to reload r0 - r3
+#endif
 	tst	r10, #_TIF_SYSCALL_WORK		@ are we tracing syscalls?
 	bne	__sys_trace
 

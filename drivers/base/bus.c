@@ -872,6 +872,18 @@ static void bus_remove_attrs(struct bus_type *bus)
 	}
 }
 
+static int bus_add_groups(struct bus_type *bus,
+			  const struct attribute_group **groups)
+{
+	return sysfs_create_groups(&bus->p->subsys.kobj, groups);
+}
+
+static void bus_remove_groups(struct bus_type *bus,
+			      const struct attribute_group **groups)
+{
+	sysfs_remove_groups(&bus->p->subsys.kobj, groups);
+}
+
 static void klist_devices_get(struct klist_node *n)
 {
 	struct device_private *dev_prv = to_device_private_bus(n);
@@ -964,10 +976,15 @@ int bus_register(struct bus_type *bus)
 	retval = bus_add_attrs(bus);
 	if (retval)
 		goto bus_attrs_fail;
+	retval = bus_add_groups(bus, bus->bus_groups);
+	if (retval)
+		goto bus_groups_fail;
 
 	pr_debug("bus: '%s': registered\n", bus->name);
 	return 0;
 
+bus_groups_fail:
+	bus_remove_attrs(bus);
 bus_attrs_fail:
 	remove_probe_files(bus);
 bus_probe_files_fail:
@@ -998,6 +1015,7 @@ void bus_unregister(struct bus_type *bus)
 	if (bus->dev_root)
 		device_unregister(bus->dev_root);
 	bus_remove_attrs(bus);
+	bus_remove_groups(bus, bus->bus_groups);
 	remove_probe_files(bus);
 	kset_unregister(bus->p->drivers_kset);
 	kset_unregister(bus->p->devices_kset);
@@ -1165,7 +1183,7 @@ int subsys_interface_register(struct subsys_interface *sif)
 		return -EINVAL;
 
 	mutex_lock(&subsys->p->mutex);
-	list_add_tail(&sif->node, &subsys->p->interfaces);
+	pax_list_add_tail((struct list_head *)&sif->node, &subsys->p->interfaces);
 	if (sif->add_dev) {
 		subsys_dev_iter_init(&iter, subsys, NULL, NULL);
 		while ((dev = subsys_dev_iter_next(&iter)))
@@ -1190,7 +1208,7 @@ void subsys_interface_unregister(struct subsys_interface *sif)
 	subsys = sif->subsys;
 
 	mutex_lock(&subsys->p->mutex);
-	list_del_init(&sif->node);
+	pax_list_del_init((struct list_head *)&sif->node);
 	if (sif->remove_dev) {
 		subsys_dev_iter_init(&iter, subsys, NULL, NULL);
 		while ((dev = subsys_dev_iter_next(&iter)))

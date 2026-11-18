@@ -400,8 +400,10 @@ __SYSCALL(375, sys_setns)
 __SYSCALL(376, compat_sys_process_vm_readv)
 __SYSCALL(377, compat_sys_process_vm_writev)
 __SYSCALL(378, sys_ni_syscall)			/* 378 for kcmp */
+__SYSCALL(379, sys_ni_syscall)			/* 379 for finit_module */
+__SYSCALL(380, sys_msa)
 
-#define __NR_compat_syscalls		379
+#define __NR_compat_syscalls		381
 
 /*
  * Compat syscall numbers used by the AArch64 kernel.

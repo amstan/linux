@@ -18,7 +18,7 @@ static DEFINE_PER_CPU(struct list_head, blk_cpu_done);
  * Softirq action handler - move entries to local list and loop over them
  * while passing them to the queue registered handler.
  */
-static void blk_done_softirq(struct softirq_action *h)
+static void blk_done_softirq(void)
 {
 	struct list_head *cpu_list, local_list;
 
@@ -51,6 +51,7 @@ static void trigger_softirq(void *data)
 		raise_softirq_irqoff(BLOCK_SOFTIRQ);
 
 	local_irq_restore(flags);
+	preempt_check_resched_rt();
 }
 
 /*
@@ -93,12 +94,13 @@ static int __cpuinit blk_cpu_notify(struct notifier_block *self,
 				 &__get_cpu_var(blk_cpu_done));
 		raise_softirq_irqoff(BLOCK_SOFTIRQ);
 		local_irq_enable();
+		preempt_check_resched_rt();
 	}
 
 	return NOTIFY_OK;
 }
 
-static struct notifier_block __cpuinitdata blk_cpu_notifier = {
+static struct notifier_block __cpuinitdata_nopax blk_cpu_notifier = {
 	.notifier_call	= blk_cpu_notify,
 };
 
@@ -150,6 +152,7 @@ do_local:
 		goto do_local;
 
 	local_irq_restore(flags);
+	preempt_check_resched_rt();
 }
 
 /**

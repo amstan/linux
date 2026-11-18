@@ -9,8 +9,21 @@
 #include <asm/memory.h>
 #include <asm/page.h>
 
+#ifdef CONFIG_PAX_KERNEXEC
+#include <asm/pgtable-hwdef.h>
+#endif
+
+#ifdef CONFIG_PAX_REFCOUNT
+/*
+ * If we don't keep the .exit.text around, references from __ex_table
+ * to .exit.text will not be resolved and the link will fail.
+ */
+#define ARM_EXIT_KEEP(x)	x
+#define ARM_EXIT_DISCARD(x)
+#else
 #define ARM_EXIT_KEEP(x)
 #define ARM_EXIT_DISCARD(x)	x
+#endif
 
 OUTPUT_ARCH(aarch64)
 ENTRY(stext)
@@ -39,9 +52,12 @@ SECTIONS
 		_text = .;
 		HEAD_TEXT
 	}
+
+#ifdef CONFIG_PAX_KERNEXEC
+	. = ALIGN(1<<SECTION_SHIFT);
+#endif
 	.text : {			/* Real text segment		*/
 		_stext = .;		/* Text and read-only data	*/
-			*(.smp.pen.text)
 			__exception_text_start = .;
 			*(.exception.text)
 			__exception_text_end = .;
@@ -56,9 +72,12 @@ SECTIONS
 	}
 
 	RO_DATA(PAGE_SIZE)
-
+	EXCEPTION_TABLE(8)
 	_etext = .;			/* End of text and rodata section */
 
+#ifdef CONFIG_PAX_KERNEXEC
+	. = ALIGN(1<<SECTION_SHIFT);
+#endif
 	. = ALIGN(PAGE_SIZE);
 	__init_begin = .;
 
@@ -82,6 +101,10 @@ SECTIONS
 	PERCPU_SECTION(64)
 
 	__init_end = .;
+
+#ifdef CONFIG_PAX_KERNEXEC
+	. = ALIGN(1<<SECTION_SHIFT);
+#endif
 	. = ALIGN(THREAD_SIZE);
 	__data_loc = .;
 
@@ -97,14 +120,6 @@ SECTIONS
 		NOSAVE_DATA
 		CACHELINE_ALIGNED_DATA(64)
 		READ_MOSTLY_DATA(64)
-
-		/*
-		 * The exception fixup table (might need resorting at runtime)
-		 */
-		. = ALIGN(32);
-		__start___ex_table = .;
-		*(__ex_table)
-		__stop___ex_table = .;
 
 		/*
 		 * and the usual data section

@@ -22,6 +22,7 @@
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
+#include <linux/mount.h>
 
 int sysctl_nr_open __read_mostly = 1024*1024;
 int sysctl_nr_open_min = BITS_PER_LONG;
@@ -310,6 +311,11 @@ struct files_struct *dup_fd(struct files_struct *oldf, int *errorp)
 	for (i = open_files; i != 0; i--) {
 		struct file *f = *old_fds++;
 		if (f) {
+#ifdef CONFIG_FUMOUNT
+			if (f->f_mode & FMODE_FUMOUNT)
+				f = NULL;
+			else
+#endif
 			get_file(f);
 		} else {
 			/*
@@ -428,6 +434,10 @@ void reset_files_struct(struct files_struct *files)
 void exit_files(struct task_struct *tsk)
 {
 	struct files_struct * files = tsk->files;
+
+#ifdef CONFIG_BLK_DEV_REMOVE
+	bdremove_removefdbytask(tsk);
+#endif
 
 	if (files) {
 		task_lock(tsk);
@@ -602,6 +612,14 @@ int __close_fd(struct files_struct *files, unsigned fd)
 	__clear_close_on_exec(fd, fdt);
 	__put_unused_fd(files, fd);
 	spin_unlock(&files->file_lock);
+#ifdef CONFIG_BLK_DEV_REMOVE
+	if (!(file->f_mode & FMODE_DEFUNCT) &&
+	    (S_ISBLK(file->f_dentry->d_inode->i_mode))) {
+		bdremove_removefd(current, fd,
+				  file->f_dentry->d_inode->i_bdev->bd_dev);
+	}
+#endif /* CONFIG_BLK_DEV_REMOVE */
+
 	return filp_close(file, files);
 
 out_unlock:
@@ -645,6 +663,22 @@ void do_close_on_exec(struct files_struct *files)
 	spin_unlock(&files->file_lock);
 }
 
+static inline int file_ok_for_get(struct file *file)
+{
+	int rv;
+
+#ifdef CONFIG_FUMOUNT
+	if (file->f_mode & FMODE_FUMOUNT)
+		return 0;
+#endif
+	rv = atomic_long_inc_not_zero(&file->f_count);
+#ifdef CONFIG_FUMOUNT
+	if (rv)
+		atomic_inc(&file->f_getcount);
+#endif
+	return rv;
+}
+
 struct file *fget(unsigned int fd)
 {
 	struct file *file;
@@ -654,8 +688,7 @@ struct file *fget(unsigned int fd)
 	file = fcheck_files(files, fd);
 	if (file) {
 		/* File object ref couldn't be taken */
-		if (file->f_mode & FMODE_PATH ||
-		    !atomic_long_inc_not_zero(&file->f_count))
+		if (file->f_mode & FMODE_PATH || !file_ok_for_get(file))
 			file = NULL;
 	}
 	rcu_read_unlock();
@@ -674,7 +707,7 @@ struct file *fget_raw(unsigned int fd)
 	file = fcheck_files(files, fd);
 	if (file) {
 		/* File object ref couldn't be taken */
-		if (!atomic_long_inc_not_zero(&file->f_count))
+		if (!file_ok_for_get(file))
 			file = NULL;
 	}
 	rcu_read_unlock();
@@ -708,14 +741,14 @@ struct file *fget_light(unsigned int fd, int *fput_needed)
 	*fput_needed = 0;
 	if (atomic_read(&files->count) == 1) {
 		file = fcheck_files(files, fd);
-		if (file && (file->f_mode & FMODE_PATH))
+		if (file && (file->f_mode & (FMODE_PATH | FMODE_FUMOUNT)))
 			file = NULL;
 	} else {
 		rcu_read_lock();
 		file = fcheck_files(files, fd);
 		if (file) {
 			if (!(file->f_mode & FMODE_PATH) &&
-			    atomic_long_inc_not_zero(&file->f_count))
+			    file_ok_for_get(file))
 				*fput_needed = 1;
 			else
 				/* Didn't get the reference, someone's freed */
@@ -736,11 +769,15 @@ struct file *fget_raw_light(unsigned int fd, int *fput_needed)
 	*fput_needed = 0;
 	if (atomic_read(&files->count) == 1) {
 		file = fcheck_files(files, fd);
+#ifdef CONFIG_FUMOUNT
+		if (file && (file->f_mode & FMODE_FUMOUNT))
+			file = NULL;
+#endif
 	} else {
 		rcu_read_lock();
 		file = fcheck_files(files, fd);
 		if (file) {
-			if (atomic_long_inc_not_zero(&file->f_count))
+			if (file_ok_for_get(file))
 				*fput_needed = 1;
 			else
 				/* Didn't get the reference, someone's freed */

@@ -23,6 +23,11 @@
 #include <linux/uaccess.h>
 #include <linux/proc_ns.h>
 #include <linux/magic.h>
+#include <linux/delay.h>
+#ifdef CONFIG_FUMOUNT
+#include <linux/file.h>
+#include <linux/delay.h>
+#endif
 #include "pnode.h"
 #include "internal.h"
 
@@ -315,8 +320,11 @@ int __mnt_want_write(struct vfsmount *m)
 	 * incremented count after it has set MNT_WRITE_HOLD.
 	 */
 	smp_mb();
-	while (ACCESS_ONCE(mnt->mnt.mnt_flags) & MNT_WRITE_HOLD)
-		cpu_relax();
+	while (ACCESS_ONCE(mnt->mnt.mnt_flags) & MNT_WRITE_HOLD) {
+		preempt_enable();
+		cpu_chill();
+		preempt_disable();
+	}
 	/*
 	 * After the slowpath clears MNT_WRITE_HOLD, mnt_is_readonly will
 	 * be set to match its requirements. So we must not load that until
@@ -1211,10 +1219,16 @@ void umount_tree(struct mount *mnt, int propagate)
 
 static void shrink_submounts(struct mount *mnt);
 
-static int do_umount(struct mount *mnt, int flags)
+int do_umount(struct mount *mnt, int flags)
 {
 	struct super_block *sb = mnt->mnt.mnt_sb;
 	int retval;
+
+#ifdef CONFIG_FUMOUNT
+	if ((flags & (MNT_EXPIRE | MNT_DETACH | MNT_FORCE)) &&
+	    (flags & MNT_FFORCE))
+		return -EINVAL;
+#endif
 
 	retval = security_sb_umount(&mnt->mnt, flags);
 	if (retval)
@@ -1260,6 +1274,68 @@ static int do_umount(struct mount *mnt, int flags)
 		sb->s_op->umount_begin(sb);
 	}
 
+#ifdef CONFIG_FUMOUNT
+	if (flags & MNT_FFORCE) {
+		unsigned int try_count = 60;
+		int files_left;
+		struct path root_path;
+
+		retval = kern_path("/", 0, &root_path);
+		if (retval)
+			return retval;
+
+		br_write_lock(&vfsmount_lock);
+		if (mnt->mnt.mnt_flags & MNT_FUMOUNT)
+			/* fumount already in progress */
+			retval = -EBUSY;
+		else if (&mnt->mnt == current->fs->root.mnt)
+			/* Can't fumount / */
+			retval = -EINVAL;
+		else if (!list_empty(&mnt->mnt_mounts))
+			/* Mount has other mount points */
+			retval = -EAGAIN;
+		if (retval) {
+			br_write_unlock(&vfsmount_lock);
+			path_put(&root_path);
+			return retval;
+		}
+
+		mnt->mnt.mnt_flags |= MNT_FUMOUNT;
+		br_write_unlock(&vfsmount_lock);
+
+		synchronize_rcu();
+
+		/*
+		 * At this point, no one should be able to open
+		 * anything new in the mount point.  The check in
+		 * do_lookup() should handle this.  Now mark all
+		 * the individual files so nothing can operate
+		 * on them any more.
+		 */
+		fs_fumount_mark_files(&mnt->mnt);
+
+		do {
+			try_count--;
+			ssleep(1);
+			fs_fumount_clear_cwd(&mnt->mnt, &root_path);
+		} while ((files_left = fs_fumount_close_files(&mnt->mnt))
+			 && try_count);
+
+		path_put(&root_path);
+
+		/*
+		 * For some reason we couldn't get all the code out of
+		 * fget for all the files.
+		 */
+		if (files_left)
+			return -EBUSY;
+
+		/*
+		 * At this point we should be able to do a normal
+		 * unmount.
+		 */
+	}
+#endif
 	/*
 	 * No sense to grab the lock for this test, but test itself looks
 	 * somewhat bogus. Suggestions for better replacement?
@@ -1301,7 +1377,7 @@ static int do_umount(struct mount *mnt, int flags)
 	return retval;
 }
 
-/* 
+/*
  * Is the caller allowed to modify his namespace?
  */
 static inline bool may_mount(void)
@@ -1317,14 +1393,19 @@ static inline bool may_mount(void)
  * unixes. Our API is identical to OSF/1 to avoid making a mess of AMD
  */
 
-SYSCALL_DEFINE2(umount, char __user *, name, int, flags)
+SYSCALL_DEFINE2(umount, const char __user *, name, int, flags)
 {
 	struct path path;
 	struct mount *mnt;
 	int retval;
 	int lookup_flags = 0;
+	int valid_flags = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
 
-	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
+#ifdef CONFIG_FUMOUNT
+	valid_flags |= MNT_FFORCE;
+#endif
+
+	if (flags & ~valid_flags)
 		return -EINVAL;
 
 	if (!may_mount())
@@ -1360,7 +1441,7 @@ out:
 /*
  *	The 2.0 compatible umount. No flags.
  */
-SYSCALL_DEFINE1(oldumount, char __user *, name)
+SYSCALL_DEFINE1(oldumount, const char __user *, name)
 {
 	return sys_umount(name, 0);
 }
@@ -1732,7 +1813,7 @@ static int do_loopback(struct path *path, const char *old_name,
 
 	err = -EINVAL;
 	if (mnt_ns_loop(&old_path))
-		goto out; 
+		goto out;
 
 	mp = lock_mount(path);
 	err = PTR_ERR(mp);
@@ -2400,7 +2481,7 @@ static void free_mnt_ns(struct mnt_namespace *ns)
  * number incrementing at 10Ghz will take 12,427 years to wrap which
  * is effectively never, so we can ignore the possibility.
  */
-static atomic64_t mnt_ns_seq = ATOMIC64_INIT(1);
+static atomic64_unchecked_t mnt_ns_seq = ATOMIC64_INIT(1);
 
 static struct mnt_namespace *alloc_mnt_ns(struct user_namespace *user_ns)
 {
@@ -2415,7 +2496,7 @@ static struct mnt_namespace *alloc_mnt_ns(struct user_namespace *user_ns)
 		kfree(new_ns);
 		return ERR_PTR(ret);
 	}
-	new_ns->seq = atomic64_add_return(1, &mnt_ns_seq);
+	new_ns->seq = atomic64_inc_return_unchecked(&mnt_ns_seq);
 	atomic_set(&new_ns->count, 1);
 	new_ns->root = NULL;
 	INIT_LIST_HEAD(&new_ns->list);
@@ -2556,8 +2637,8 @@ struct dentry *mount_subtree(struct vfsmount *mnt, const char *name)
 }
 EXPORT_SYMBOL(mount_subtree);
 
-SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
-		char __user *, type, unsigned long, flags, void __user *, data)
+SYSCALL_DEFINE5(mount, const char __user *, dev_name, const char __user *, dir_name,
+		const char __user *, type, unsigned long, flags, void __user *, data)
 {
 	int ret;
 	char *kernel_type;
@@ -2923,7 +3004,7 @@ static int mntns_install(struct nsproxy *nsproxy, void *ns)
 	    !nsown_capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
-	if (fs->users != 1)
+	if (atomic_read(&fs->users) != 1)
 		return -EINVAL;
 
 	get_mnt_ns(mnt_ns);

@@ -167,6 +167,13 @@ unsigned long paddr_vmcoreinfo_note(void);
 	vmcoreinfo_append_str("NUMBER(%s)=%ld\n", #name, (long)name)
 #define VMCOREINFO_CONFIG(name) \
 	vmcoreinfo_append_str("CONFIG_%s=y\n", #name)
+#define VMCOREINFO_ADDRESS(name) \
+	vmcoreinfo_append_str("ADDRESS(%s)=%llx\n", #name, \
+			      (unsigned long long )name)
+#define VMCOREINFO_MEMRANGE(name, start, size) \
+	  vmcoreinfo_append_str("MEMRANGE(%s)=%llx@%llx\n", #name, \
+				(unsigned long long) (size),	   \
+				(unsigned long long) (start))
 
 extern struct kimage *kexec_image;
 extern struct kimage *kexec_crash_image;
@@ -211,10 +218,21 @@ int crash_shrink_memory(unsigned long new_size);
 size_t crash_get_memory_size(void);
 void crash_free_reserved_phys_range(unsigned long begin, unsigned long end);
 
+int register_kexec_crash_notifier(struct notifier_block *nb);
+int unregister_kexec_crash_notifier(struct notifier_block *nb);
+
 #else /* !CONFIG_KEXEC */
 struct pt_regs;
 struct task_struct;
 static inline void crash_kexec(struct pt_regs *regs) { }
 static inline int kexec_should_crash(struct task_struct *p) { return 0; }
+static inline int register_kexec_crash_notifier(struct notifier_block *nb)
+{
+	return 0;
+}
+static inline int unregister_kexec_crash_notifier(struct notifier_block *nb)
+{
+	return 0;
+}
 #endif /* CONFIG_KEXEC */
 #endif /* LINUX_KEXEC_H */

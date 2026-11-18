@@ -1,6 +1,10 @@
 #ifndef _ASM_GENERIC_CPUTIME_H
 #define _ASM_GENERIC_CPUTIME_H
 
+#ifdef CONFIG_MICROSTATE_ACCT
+#include <asm-generic/cputime_msa.h>
+#else
+
 #include <linux/time.h>
 #include <linux/jiffies.h>
 
@@ -12,4 +16,5 @@
 # include <asm-generic/cputime_nsecs.h>
 #endif
 
+#endif
 #endif

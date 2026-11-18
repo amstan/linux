@@ -59,8 +59,19 @@ static void vunmap_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end)
 
 	pte = pte_offset_kernel(pmd, addr);
 	do {
-		pte_t ptent = ptep_get_and_clear(&init_mm, addr, pte);
-		WARN_ON(!pte_none(ptent) && !pte_present(ptent));
+
+#if defined(CONFIG_X86_32) && defined(CONFIG_PAX_KERNEXEC)
+		if ((unsigned long)MODULES_EXEC_VADDR <= addr && addr < (unsigned long)MODULES_EXEC_END) {
+			BUG_ON(!pte_exec(*pte));
+			set_pte_at(&init_mm, addr, pte, pfn_pte(__pa(addr) >> PAGE_SHIFT, PAGE_KERNEL_EXEC));
+			continue;
+		}
+#endif
+
+		{
+			pte_t ptent = ptep_get_and_clear(&init_mm, addr, pte);
+			WARN_ON(!pte_none(ptent) && !pte_present(ptent));
+		}
 	} while (pte++, addr += PAGE_SIZE, addr != end);
 }
 
@@ -97,6 +108,9 @@ static void vunmap_page_range(unsigned long addr, unsigned long end)
 	pgd_t *pgd;
 	unsigned long next;
 
+#ifdef CONFIG_PAX_SEC_PGD	
+	pgd_t *pgd_pax = pgd_offset_pax(addr);
+#endif
 	BUG_ON(addr >= end);
 	pgd = pgd_offset_k(addr);
 	do {
@@ -104,7 +118,13 @@ static void vunmap_page_range(unsigned long addr, unsigned long end)
 		if (pgd_none_or_clear_bad(pgd))
 			continue;
 		vunmap_pud_range(pgd, addr, next);
+#ifdef CONFIG_PAX_SEC_PGD	
+		*pgd_pax = *pgd;
+	} while (pgd++, pgd_pax++, addr = next, addr != end);
+#else
 	} while (pgd++, addr = next, addr != end);
+#endif
+
 }
 
 static int vmap_pte_range(pmd_t *pmd, unsigned long addr,
@@ -120,16 +140,29 @@ static int vmap_pte_range(pmd_t *pmd, unsigned long addr,
 	pte = pte_alloc_kernel(pmd, addr);
 	if (!pte)
 		return -ENOMEM;
+
+	pax_open_kernel();
 	do {
 		struct page *page = pages[*nr];
 
-		if (WARN_ON(!pte_none(*pte)))
+#if defined(CONFIG_X86_32) && defined(CONFIG_PAX_KERNEXEC)
+		if (pgprot_val(prot) & _PAGE_NX)
+#endif
+
+		if (!pte_none(*pte)) {
+			pax_close_kernel();
+			WARN_ON(1);
 			return -EBUSY;
-		if (WARN_ON(!page))
+		}
+		if (!page) {
+			pax_close_kernel();
+			WARN_ON(1);
 			return -ENOMEM;
+		}
 		set_pte_at(&init_mm, addr, pte, mk_pte(page, prot));
 		(*nr)++;
 	} while (pte++, addr += PAGE_SIZE, addr != end);
+	pax_close_kernel();
 	return 0;
 }
 
@@ -139,7 +172,7 @@ static int vmap_pmd_range(pud_t *pud, unsigned long addr,
 	pmd_t *pmd;
 	unsigned long next;
 
-	pmd = pmd_alloc(&init_mm, pud, addr);
+	pmd = pmd_alloc_kernel(&init_mm, pud, addr);
 	if (!pmd)
 		return -ENOMEM;
 	do {
@@ -156,7 +189,7 @@ static int vmap_pud_range(pgd_t *pgd, unsigned long addr,
 	pud_t *pud;
 	unsigned long next;
 
-	pud = pud_alloc(&init_mm, pgd, addr);
+	pud = pud_alloc_kernel(&init_mm, pgd, addr);
 	if (!pud)
 		return -ENOMEM;
 	do {
@@ -181,6 +214,9 @@ static int vmap_page_range_noflush(unsigned long start, unsigned long end,
 	unsigned long addr = start;
 	int err = 0;
 	int nr = 0;
+#ifdef CONFIG_PAX_SEC_PGD	
+	pgd_t *pgd_pax = pgd_offset_pax(addr);
+#endif
 
 	BUG_ON(addr >= end);
 	pgd = pgd_offset_k(addr);
@@ -189,7 +225,12 @@ static int vmap_page_range_noflush(unsigned long start, unsigned long end,
 		err = vmap_pud_range(pgd, addr, next, prot, pages, &nr);
 		if (err)
 			return err;
+#ifdef CONFIG_PAX_SEC_PGD	
+		*pgd_pax = *pgd;
+	} while (pgd++, pgd_pax++, addr = next, addr != end);
+#else
 	} while (pgd++, addr = next, addr != end);
+#endif
 
 	return nr;
 }
@@ -216,8 +257,15 @@ int is_vmalloc_or_module_addr(const void *x)
 	if (addr >= MODULES_VADDR && addr < MODULES_END)
 		return 1;
 #endif
+
+#if defined(CONFIG_X86_32) && defined(CONFIG_PAX_KERNEXEC)
+	if (x >= (const void *)MODULES_EXEC_VADDR && x < (const void *)MODULES_EXEC_END)
+		return 1;
+#endif
+
 	return is_vmalloc_addr(x);
 }
+EXPORT_SYMBOL(is_vmalloc_or_module_addr);
 
 /*
  * Walk a vmap address to the struct page it maps.
@@ -236,8 +284,14 @@ struct page *vmalloc_to_page(const void *vmalloc_addr)
 
 	if (!pgd_none(*pgd)) {
 		pud_t *pud = pud_offset(pgd, addr);
+#ifdef CONFIG_X86
+		if (!pud_large(*pud))
+#endif
 		if (!pud_none(*pud)) {
 			pmd_t *pmd = pmd_offset(pud, addr);
+#ifdef CONFIG_X86
+			if (!pmd_large(*pmd))
+#endif
 			if (!pmd_none(*pmd)) {
 				pte_t *ptep, pte;
 
@@ -339,7 +393,7 @@ static void purge_vmap_area_lazy(void);
  * Allocate a region of KVA of the specified size and alignment, within the
  * vstart and vend.
  */
-static struct vmap_area *alloc_vmap_area(unsigned long size,
+static __size_overflow(1) struct vmap_area *alloc_vmap_area(unsigned long size,
 				unsigned long align,
 				unsigned long vstart, unsigned long vend,
 				int node, gfp_t gfp_mask)
@@ -792,7 +846,7 @@ static struct vmap_block *new_vmap_block(gfp_t gfp_mask)
 	struct vmap_block *vb;
 	struct vmap_area *va;
 	unsigned long vb_idx;
-	int node, err;
+	int node, err, cpu;
 
 	node = numa_node_id();
 
@@ -831,12 +885,13 @@ static struct vmap_block *new_vmap_block(gfp_t gfp_mask)
 	BUG_ON(err);
 	radix_tree_preload_end();
 
-	vbq = &get_cpu_var(vmap_block_queue);
+	cpu = get_cpu_light();
+	vbq = &__get_cpu_var(vmap_block_queue);
 	vb->vbq = vbq;
 	spin_lock(&vbq->lock);
 	list_add_rcu(&vb->free_list, &vbq->free);
 	spin_unlock(&vbq->lock);
-	put_cpu_var(vmap_block_queue);
+	put_cpu_light();
 
 	return vb;
 }
@@ -910,7 +965,7 @@ static void *vb_alloc(unsigned long size, gfp_t gfp_mask)
 	struct vmap_block *vb;
 	unsigned long addr = 0;
 	unsigned int order;
-	int purge = 0;
+	int purge = 0, cpu;
 
 	BUG_ON(size & ~PAGE_MASK);
 	BUG_ON(size > PAGE_SIZE*VMAP_MAX_ALLOC);
@@ -926,7 +981,8 @@ static void *vb_alloc(unsigned long size, gfp_t gfp_mask)
 
 again:
 	rcu_read_lock();
-	vbq = &get_cpu_var(vmap_block_queue);
+	cpu = get_cpu_light();
+	vbq = &__get_cpu_var(vmap_block_queue);
 	list_for_each_entry_rcu(vb, &vbq->free, free_list) {
 		int i;
 
@@ -963,7 +1019,7 @@ next:
 	if (purge)
 		purge_fragmented_blocks_thiscpu();
 
-	put_cpu_var(vmap_block_queue);
+	put_cpu_light();
 	rcu_read_unlock();
 
 	if (!addr) {
@@ -1337,6 +1393,16 @@ static struct vm_struct *__get_vm_area_node(unsigned long size,
 	struct vm_struct *area;
 
 	BUG_ON(in_interrupt());
+
+#if defined(CONFIG_X86) && defined(CONFIG_PAX_KERNEXEC)
+	if (flags & VM_KERNEXEC) {
+		if (start != VMALLOC_START || end != VMALLOC_END)
+			return NULL;
+		start = (unsigned long)MODULES_EXEC_VADDR;
+		end = (unsigned long)MODULES_EXEC_END;
+	}
+#endif
+
 	if (flags & VM_IOREMAP) {
 		int bit = fls(size);
 
@@ -1581,6 +1647,11 @@ void *vmap(struct page **pages, unsigned int count,
 	if (count > totalram_pages)
 		return NULL;
 
+#if defined(CONFIG_X86) && defined(CONFIG_PAX_KERNEXEC)
+	if (!(pgprot_val(prot) & _PAGE_NX))
+		flags |= VM_KERNEXEC;
+#endif
+
 	area = get_vm_area_caller((count << PAGE_SHIFT), flags,
 					__builtin_return_address(0));
 	if (!area)
@@ -1681,6 +1752,13 @@ void *__vmalloc_node_range(unsigned long size, unsigned long align,
 	size = PAGE_ALIGN(size);
 	if (!size || (size >> PAGE_SHIFT) > totalram_pages)
 		goto fail;
+
+#if defined(CONFIG_X86) && defined(CONFIG_PAX_KERNEXEC)
+	if (!(pgprot_val(prot) & _PAGE_NX))
+		area = __get_vm_area_node(size, align, VM_ALLOC | VM_UNLIST | VM_KERNEXEC,
+					  VMALLOC_START, VMALLOC_END, node, gfp_mask, caller);
+	else
+#endif
 
 	area = __get_vm_area_node(size, align, VM_ALLOC | VM_UNLIST,
 				  start, end, node, gfp_mask, caller);
@@ -1858,10 +1936,9 @@ EXPORT_SYMBOL(vzalloc_node);
  *	For tight control over page level allocator and protection flags
  *	use __vmalloc() instead.
  */
-
 void *vmalloc_exec(unsigned long size)
 {
-	return __vmalloc_node(size, 1, GFP_KERNEL | __GFP_HIGHMEM, PAGE_KERNEL_EXEC,
+	return __vmalloc_node(size, 1, GFP_KERNEL | __GFP_HIGHMEM | __GFP_ZERO, PAGE_KERNEL_EXEC,
 			      NUMA_NO_NODE, __builtin_return_address(0));
 }
 
@@ -2167,6 +2244,8 @@ int remap_vmalloc_range(struct vm_area_struct *vma, void *addr,
 	struct vm_struct *area;
 	unsigned long uaddr = vma->vm_start;
 	unsigned long usize = vma->vm_end - vma->vm_start;
+
+	BUG_ON(vma->vm_mirror);
 
 	if ((PAGE_SIZE-1) & (unsigned long)addr)
 		return -EINVAL;

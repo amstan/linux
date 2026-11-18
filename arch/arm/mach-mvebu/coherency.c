@@ -35,6 +35,8 @@
  * value matching its virtual mapping
  */
 static void __iomem *coherency_base = ARMADA_370_XP_REGS_VIRT_BASE + 0x20200;
+unsigned long coherency_phys_base;
+static void __iomem *coherency_base;
 static void __iomem *coherency_cpu_base;
 
 /* Coherency fabric registers */

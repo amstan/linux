@@ -15,7 +15,7 @@
 
 #include <linux/device.h>
 #include <linux/notifier.h>
-#include <linux/opp.h>
+#include <linux/pm_opp.h>
 
 #define DEVFREQ_NAME_LEN 16
 
@@ -114,7 +114,7 @@ struct devfreq_governor {
 	int (*get_target_freq)(struct devfreq *this, unsigned long *freq);
 	int (*event_handler)(struct devfreq *devfreq,
 				unsigned int event, void *data);
-};
+} __do_const;
 
 /**
  * struct devfreq - Device devfreq structure
@@ -185,7 +185,7 @@ extern int devfreq_suspend_device(struct devfreq *devfreq);
 extern int devfreq_resume_device(struct devfreq *devfreq);
 
 /* Helper functions for devfreq user device driver with OPP. */
-extern struct opp *devfreq_recommended_opp(struct device *dev,
+extern struct dev_pm_opp *devfreq_recommended_opp(struct device *dev,
 					   unsigned long *freq, u32 flags);
 extern int devfreq_register_opp_notifier(struct device *dev,
 					 struct devfreq *devfreq);
@@ -236,7 +236,7 @@ static inline int devfreq_resume_device(struct devfreq *devfreq)
 	return 0;
 }
 
-static inline struct opp *devfreq_recommended_opp(struct device *dev,
+static inline struct dev_pm_opp *devfreq_recommended_opp(struct device *dev,
 					   unsigned long *freq, u32 flags)
 {
 	return ERR_PTR(-EINVAL);

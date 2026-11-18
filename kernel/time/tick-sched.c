@@ -23,6 +23,7 @@
 #include <linux/irq_work.h>
 #include <linux/posix-timers.h>
 #include <linux/perf_event.h>
+#include "../sched/sched.h"
 
 #include <asm/irq_regs.h>
 
@@ -61,7 +62,8 @@ static void tick_do_update_jiffies64(ktime_t now)
 		return;
 
 	/* Reevalute with jiffies_lock held */
-	write_seqlock(&jiffies_lock);
+	raw_spin_lock(&jiffies_lock);
+	write_seqcount_begin(&jiffies_seq);
 
 	delta = ktime_sub(now, last_jiffies_update);
 	if (delta.tv64 >= tick_period.tv64) {
@@ -84,7 +86,8 @@ static void tick_do_update_jiffies64(ktime_t now)
 		/* Keep the tick_next_period variable up to date */
 		tick_next_period = ktime_add(last_jiffies_update, tick_period);
 	}
-	write_sequnlock(&jiffies_lock);
+	write_seqcount_end(&jiffies_seq);
+	raw_spin_unlock(&jiffies_lock);
 }
 
 /*
@@ -94,12 +97,14 @@ static ktime_t tick_init_jiffy_update(void)
 {
 	ktime_t period;
 
-	write_seqlock(&jiffies_lock);
+	raw_spin_lock(&jiffies_lock);
+	write_seqcount_begin(&jiffies_seq);
 	/* Did we start the jiffies update yet ? */
 	if (last_jiffies_update.tv64 == 0)
 		last_jiffies_update = tick_next_period;
 	period = last_jiffies_update;
-	write_sequnlock(&jiffies_lock);
+	write_seqcount_end(&jiffies_seq);
+	raw_spin_unlock(&jiffies_lock);
 	return period;
 }
 
@@ -210,6 +215,7 @@ static void nohz_full_kick_work_func(struct irq_work *work)
 
 static DEFINE_PER_CPU(struct irq_work, nohz_full_kick_work) = {
 	.func = nohz_full_kick_work_func,
+	.flags = IRQ_WORK_HARD_IRQ,
 };
 
 /*
@@ -472,6 +478,7 @@ static ktime_t tick_nohz_start_idle(int cpu, struct tick_sched *ts)
 u64 get_cpu_idle_time_us(int cpu, u64 *last_update_time)
 {
 	struct tick_sched *ts = &per_cpu(tick_cpu_sched, cpu);
+#ifndef CONFIG_MICROSTATE_ACCT
 	ktime_t now, idle;
 
 	if (!tick_nohz_enabled)
@@ -490,9 +497,33 @@ u64 get_cpu_idle_time_us(int cpu, u64 *last_update_time)
 			idle = ts->idle_sleeptime;
 		}
 	}
-
 	return ktime_to_us(idle);
+#else
+	u64 *cpustat = kcpustat_cpu(cpu).cpustat;
+	msa_time_t now, delta;
+	struct rq *rq;
 
+	if (!tick_nohz_enabled)
+		return -1;
+
+	if (last_update_time) {
+		MSA_NOW(now);
+		delta = now - usecs_to_cputime64(*last_update_time);
+		if (delta > 0)
+			cpustat[CPUTIME_IDLE] += delta;
+		return cputime_to_usecs(cpustat[CPUTIME_IDLE]);
+	}
+
+	if (!ts->idle_active || nr_iowait_cpu(cpu))
+		return -1;
+
+	rq = cpu_rq(cpu);
+	MSA_NOW(now);
+	delta = now - rq->idle->microstates.last_change;
+	if (delta < 0)
+		delta = 0;
+	return cputime_to_usecs(cpustat[CPUTIME_IDLE] + delta);
+#endif /* CONFIG_MICROSTATE_ACCT */
 }
 EXPORT_SYMBOL_GPL(get_cpu_idle_time_us);
 
@@ -513,6 +544,7 @@ EXPORT_SYMBOL_GPL(get_cpu_idle_time_us);
 u64 get_cpu_iowait_time_us(int cpu, u64 *last_update_time)
 {
 	struct tick_sched *ts = &per_cpu(tick_cpu_sched, cpu);
+#ifndef CONFIG_MICROSTATE_ACCT
 	ktime_t now, iowait;
 
 	if (!tick_nohz_enabled)
@@ -533,6 +565,32 @@ u64 get_cpu_iowait_time_us(int cpu, u64 *last_update_time)
 	}
 
 	return ktime_to_us(iowait);
+#else
+	u64 *cpustat = kcpustat_cpu(cpu).cpustat;
+	msa_time_t now, delta;
+	struct rq *rq;
+
+	if (!tick_nohz_enabled)
+		return -1;
+
+	if (last_update_time) {
+		MSA_NOW(now);
+		delta = now - usecs_to_cputime64(*last_update_time);
+		if (delta > 0)
+			cpustat[CPUTIME_IOWAIT] += delta;
+		return cputime_to_usecs(cpustat[CPUTIME_IOWAIT]);
+	}
+
+	if (!ts->idle_active || nr_iowait_cpu(cpu) == 0)
+		return -1;
+
+	rq = cpu_rq(cpu);
+	MSA_NOW(now);
+	delta = now - rq->idle->microstates.last_change;
+	if (delta < 0)
+		delta = 0;
+	return cputime_to_usecs(cpustat[CPUTIME_IOWAIT] + delta);
+#endif /* CONFIG_MICROSTATE_ACCT */
 }
 EXPORT_SYMBOL_GPL(get_cpu_iowait_time_us);
 
@@ -547,11 +605,11 @@ static ktime_t tick_nohz_stop_sched_tick(struct tick_sched *ts,
 
 	/* Read jiffies and the time when jiffies were updated last */
 	do {
-		seq = read_seqbegin(&jiffies_lock);
+		seq = read_seqcount_begin(&jiffies_seq);
 		last_update = last_jiffies_update;
 		last_jiffies = jiffies;
 		time_delta = timekeeping_max_deferment();
-	} while (read_seqretry(&jiffies_lock, seq));
+	} while (read_seqcount_retry(&jiffies_seq, seq));
 
 	if (rcu_needs_cpu(cpu, &rcu_delta_jiffies) ||
 	    arch_needs_cpu(cpu) || irq_work_needs_cpu()) {
@@ -729,14 +787,7 @@ static bool can_stop_idle_tick(int cpu, struct tick_sched *ts)
 		return false;
 
 	if (unlikely(local_softirq_pending() && cpu_online(cpu))) {
-		static int ratelimit;
-
-		if (ratelimit < 10 &&
-		    (local_softirq_pending() & SOFTIRQ_STOP_IDLE_MASK)) {
-			pr_warn("NOHZ: local_softirq_pending %02x\n",
-				(unsigned int) local_softirq_pending());
-			ratelimit++;
-		}
+		softirq_check_pending_idle();
 		return false;
 	}
 
@@ -897,7 +948,7 @@ static void tick_nohz_restart_sched_tick(struct tick_sched *ts, ktime_t now)
 
 static void tick_nohz_account_idle_ticks(struct tick_sched *ts)
 {
-#ifndef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
+#if !defined(CONFIG_VIRT_CPU_ACCOUNTING_NATIVE) && !defined(CONFIG_MICROSTATE_ACCT)
 	unsigned long ticks;
 
 	if (vtime_accounting_enabled())
@@ -1126,6 +1177,7 @@ void tick_setup_sched_timer(void)
 	 * Emulate tick processing via per-CPU hrtimers:
 	 */
 	hrtimer_init(&ts->sched_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+	ts->sched_timer.irqsafe = 1;
 	ts->sched_timer.function = tick_sched_timer;
 
 	/* Get the next period (per cpu) */

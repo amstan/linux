@@ -313,6 +313,7 @@ static int pci_dev_uses_irq(struct pnp_dev *pnp, struct pci_dev *pci,
 	progif = class & 0xff;
 	class >>= 8;
 
+#ifdef HAVE_ARCH_PCI_GET_LEGACY_IDE_IRQ
 	if (class == PCI_CLASS_STORAGE_IDE) {
 		/*
 		 * Unless both channels are native-PCI mode only,
@@ -326,6 +327,7 @@ static int pci_dev_uses_irq(struct pnp_dev *pnp, struct pci_dev *pci,
 				return 1;
 			}
 	}
+#endif /* HAVE_ARCH_PCI_GET_LEGACY_IDE_IRQ */
 
 	return 0;
 }
@@ -360,7 +362,7 @@ int pnp_check_irq(struct pnp_dev *dev, struct resource *res)
 		return 1;
 
 	/* check if the resource is valid */
-	if (*irq < 0 || *irq > 15)
+	if (*irq > 15)
 		return 0;
 
 	/* check if the resource is reserved */
@@ -424,7 +426,7 @@ int pnp_check_dma(struct pnp_dev *dev, struct resource *res)
 		return 1;
 
 	/* check if the resource is valid */
-	if (*dma < 0 || *dma == 4 || *dma > 7)
+	if (*dma == 4 || *dma > 7)
 		return 0;
 
 	/* check if the resource is reserved */

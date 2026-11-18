@@ -1524,8 +1524,12 @@ struct block_device_operations {
 	int (*getgeo)(struct block_device *, struct hd_geometry *);
 	/* this callback is with swap_lock and sometimes page table lock held */
 	void (*swap_slot_free_notify) (struct block_device *, unsigned long);
+#ifdef CONFIG_BLK_DEV_REMOVE
+	/* first param is self, second is parent disk if exist */
+	int (*remove) (struct gendisk *, dev_t dev);
+#endif
 	struct module *owner;
-};
+} __do_const;
 
 extern int __blkdev_driver_ioctl(struct block_device *, fmode_t, unsigned int,
 				 unsigned long);

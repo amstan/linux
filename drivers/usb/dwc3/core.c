@@ -63,6 +63,10 @@
 static char *maximum_speed = "super";
 module_param(maximum_speed, charp, 0);
 MODULE_PARM_DESC(maximum_speed, "Maximum supported speed.");
+extern void octeon3_usb_phy_reset(u64 base);
+extern int xhci_octeon_start(struct platform_device *pdev);
+extern int xhci_octeon_stop(struct platform_device *pdev);
+static u64 xhci_octeon_dma_mask = DMA_BIT_MASK(64);
 
 /* -------------------------------------------------------------------------- */
 
@@ -99,8 +103,12 @@ static void dwc3_core_soft_reset(struct dwc3 *dwc)
 	reg |= DWC3_GUSB2PHYCFG_PHYSOFTRST;
 	dwc3_writel(dwc->regs, DWC3_GUSB2PHYCFG(0), reg);
 
+#if IS_ENABLED(CONFIG_USB_XHCI_HCD_OCTEON)
+	octeon3_usb_phy_reset((u64)dwc->regs);
+#else
 	usb_phy_init(dwc->usb2_phy);
 	usb_phy_init(dwc->usb3_phy);
+#endif
 	mdelay(100);
 
 	/* Clear USB3 PHY reset */
@@ -359,8 +367,10 @@ err0:
 
 static void dwc3_core_exit(struct dwc3 *dwc)
 {
+#if !IS_ENABLED(CONFIG_USB_XHCI_HCD_OCTEON)
 	usb_phy_shutdown(dwc->usb2_phy);
 	usb_phy_shutdown(dwc->usb3_phy);
+#endif
 }
 
 #define DWC3_ALIGN_MASK		(16 - 1)
@@ -379,6 +389,11 @@ static int dwc3_probe(struct platform_device *pdev)
 
 	u8			mode;
 
+#if defined(CONFIG_USB_XHCI_HCD_OCTEON) || defined(CONFIG_USB_XHCI_HCD_OCTEON_MODULE)
+	ret = xhci_octeon_start(pdev);
+	if (ret)
+		return ret;
+#endif
 	mem = devm_kzalloc(dev, sizeof(*dwc) + DWC3_ALIGN_MASK, GFP_KERNEL);
 	if (!mem) {
 		dev_err(dev, "not enough memory\n");
@@ -429,43 +444,27 @@ static int dwc3_probe(struct platform_device *pdev)
 	if (node) {
 		dwc->usb2_phy = devm_usb_get_phy_by_phandle(dev, "usb-phy", 0);
 		dwc->usb3_phy = devm_usb_get_phy_by_phandle(dev, "usb-phy", 1);
-	} else {
-		dwc->usb2_phy = devm_usb_get_phy(dev, USB_PHY_TYPE_USB2);
-		dwc->usb3_phy = devm_usb_get_phy(dev, USB_PHY_TYPE_USB3);
+		if (of_property_read_bool(node, "usb-phy")) {
+			dwc->usb2_phy = devm_usb_get_phy_by_phandle(dev,"usb-phy", 0);
+			if (IS_ERR(dwc->usb2_phy))
+				return PTR_ERR(dwc->usb2_phy);
+			dwc->usb3_phy = devm_usb_get_phy_by_phandle(dev, "usb-phy", 1);
+			if (IS_ERR(dwc->usb3_phy))
+				return PTR_ERR(dwc->usb3_phy);
+		}
+		else {
+			dwc->usb2_phy = NULL;
+			dwc->usb3_phy = NULL;
+		}
 	}
-
-	if (IS_ERR(dwc->usb2_phy)) {
-		ret = PTR_ERR(dwc->usb2_phy);
-
-		/*
-		 * if -ENXIO is returned, it means PHY layer wasn't
-		 * enabled, so it makes no sense to return -EPROBE_DEFER
-		 * in that case, since no PHY driver will ever probe.
-		 */
-		if (ret == -ENXIO)
-			return ret;
-
-		dev_err(dev, "no usb2 phy configured\n");
-		return -EPROBE_DEFER;
+	else {
+			dwc->usb2_phy = devm_usb_get_phy(dev, USB_PHY_TYPE_USB2);
+			dwc->usb3_phy = devm_usb_get_phy(dev, USB_PHY_TYPE_USB3);
 	}
-
-	if (IS_ERR(dwc->usb3_phy)) {
-		ret = PTR_ERR(dwc->usb3_phy);
-
-		/*
-		 * if -ENXIO is returned, it means PHY layer wasn't
-		 * enabled, so it makes no sense to return -EPROBE_DEFER
-		 * in that case, since no PHY driver will ever probe.
-		 */
-		if (ret == -ENXIO)
-			return ret;
-
-		dev_err(dev, "no usb3 phy configured\n");
-		return -EPROBE_DEFER;
-	}
-
+#if !defined(CONFIG_USB_XHCI_HCD_OCTEON) && !defined(CONFIG_USB_XHCI_HCD_OCTEON_MODULE)
 	usb_phy_set_suspend(dwc->usb2_phy, 0);
 	usb_phy_set_suspend(dwc->usb3_phy, 0);
+#endif
 
 	spin_lock_init(&dwc->lock);
 	platform_set_drvdata(pdev, dwc);
@@ -474,7 +473,11 @@ static int dwc3_probe(struct platform_device *pdev)
 	dwc->regs_size	= resource_size(res);
 	dwc->dev	= dev;
 
+#if IS_ENABLED(CONFIG_USB_XHCI_HCD_OCTEON)
+	dev->dma_mask	= &xhci_octeon_dma_mask;
+#else
 	dev->dma_mask	= dev->parent->dma_mask;
+#endif
 	dev->dma_parms	= dev->parent->dma_parms;
 	dma_set_coherent_mask(dev, dev->parent->coherent_dma_mask);
 
@@ -624,10 +627,16 @@ static int dwc3_remove(struct platform_device *pdev)
 	dwc3_event_buffers_cleanup(dwc);
 	dwc3_free_event_buffers(dwc);
 
+#if !IS_ENABLED(CONFIG_USB_XHCI_HCD_OCTEON)
 	usb_phy_set_suspend(dwc->usb2_phy, 1);
 	usb_phy_set_suspend(dwc->usb3_phy, 1);
+#endif
 
 	dwc3_core_exit(dwc);
+
+#if IS_ENABLED(CONFIG_USB_XHCI_HCD_OCTEON)
+	xhci_octeon_stop(pdev);
+#endif
 
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
@@ -701,8 +710,10 @@ static int dwc3_suspend(struct device *dev)
 	dwc->gctl = dwc3_readl(dwc->regs, DWC3_GCTL);
 	spin_unlock_irqrestore(&dwc->lock, flags);
 
+#if !IS_ENABLED(CONFIG_USB_XHCI_HCD_OCTEON)
 	usb_phy_shutdown(dwc->usb3_phy);
 	usb_phy_shutdown(dwc->usb2_phy);
+#endif
 
 	return 0;
 }
@@ -712,8 +723,10 @@ static int dwc3_resume(struct device *dev)
 	struct dwc3	*dwc = dev_get_drvdata(dev);
 	unsigned long	flags;
 
+#if !IS_ENABLED(CONFIG_USB_XHCI_HCD_OCTEON)
 	usb_phy_init(dwc->usb3_phy);
 	usb_phy_init(dwc->usb2_phy);
+#endif
 	msleep(100);
 
 	spin_lock_irqsave(&dwc->lock, flags);
