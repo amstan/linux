@@ -274,6 +274,48 @@ int __cvmx_export_app_config(void)
 		return -1;
 	}
 
+	/* vswtr: the named block IS the kernel->SE-app contract surface.
+	 * Print its PA + sizes and every non-zero exported table entry so a
+	 * V1 boot narrates the exact bytes the FP app will import. */
+	{
+		int i;
+		struct cvmx_cfg_port_param *cp = &cvmx_cfg_port[0][0][0];
+		struct cvmx_cfg_pko_port_param *pq = &cvmx_pko_queue_table[0];
+
+		printk(KERN_INFO "vswtr: appcfg block PA=0x%llx sz=%d (pko_cfg=%d fpa_cfg=%d) pko_tbl=%px cfg_port=%px\n",
+		       (unsigned long long)app_config_addr, sz,
+		       pko_cfg_sz, fpa_cfg_sz, pq, cp);
+		printk(KERN_INFO "vswtr: appcfg sizeof(cfg_port_param)=%zu sizeof(cfg_pko_port_param)=%zu sizeof(fpa_appconfig)=%zu\n",
+		       sizeof(struct cvmx_cfg_port_param),
+		       sizeof(struct cvmx_cfg_pko_port_param),
+		       sizeof(struct cvmx_fpa_appconfig));
+		for (i = 0; i < MAX_PKO_PORTS; i++)
+			if (pq[i].ccppp_queue_base || pq[i].ccppp_num_queues)
+				printk(KERN_INFO "vswtr: pko_tbl[%d] qbase=%d nq=%d\n",
+				       i, pq[i].ccppp_queue_base,
+				       pq[i].ccppp_num_queues);
+		for (i = 0; i < MAX_IFACE * MAX_PORT_PER_IFACE; i++) {
+			uint64_t *w = (uint64_t *)&cp[i];
+			int j, nz = 0;
+
+			for (j = 0; j < (int)(sizeof(cp[i]) / 8); j++)
+				if (w[j])
+					nz = 1;
+			if (nz) {
+				printk(KERN_INFO "vswtr: cfg_port[%d(if%hd/port%d)] %016llx %016llx %016llx %016llx\n",
+				       i, (short)(i / MAX_PORT_PER_IFACE),
+				       i % MAX_PORT_PER_IFACE,
+				       (unsigned long long)w[0],
+				       (unsigned long long)w[1],
+				       (unsigned long long)w[2],
+				       (unsigned long long)w[3]);
+			}
+		}
+		printk(KERN_INFO "vswtr: appcfg wqe_pool=%llu blk_sz=%llu\n",
+		       (unsigned long long)cvmx_fpa_get_wqe_pool(),
+		       (unsigned long long)cvmx_fpa_get_wqe_pool_block_size());
+	}
+
 	/* write pko config to named block */
 	__cvmx_export_pko_config(app_config_addr);
 
@@ -415,6 +457,9 @@ int __cvmx_import_app_config(void)
 	int pko_cfg_sz;
 	int64_t app_config_addr;
 	int res = 0, dbg = 0;
+
+	printk(KERN_INFO "vswtr: import_app_config caller=%pS\n",
+	       __builtin_return_address(0));
 
 	/* find named block */
 	block_desc = cvmx_bootmem_find_named_block(cvmx_appcfg_transport_block_name);
