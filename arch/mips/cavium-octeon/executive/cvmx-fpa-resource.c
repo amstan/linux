@@ -132,11 +132,15 @@ cvmx_fpa3_reserve_aura(int node, int desired_aura_num)
 		rv = cvmx_resource_alloc_reverse(tag, owner);
 
 	if (rv < 0) {
+		printk(KERN_INFO "vswtr: reserve_aura node=%d want=%d FAILED caller=%pS\n",
+		       node, desired_aura_num, __builtin_return_address(0));
 		cvmx_printf("ERROR: %s: node=%u desired aura=%d\n",
 			__func__, node, desired_aura_num);
 		return CVMX_FPA3_INVALID_GAURA;
 	}
 
+	printk(KERN_INFO "vswtr: reserve_aura node=%d want=%d -> %d caller=%pS\n",
+	       node, desired_aura_num, rv, __builtin_return_address(0));
 	aura = __cvmx_fpa3_gaura(node, rv);
 
 	return aura;
@@ -146,6 +150,9 @@ int cvmx_fpa3_release_aura(cvmx_fpa3_gaura_t aura)
 {
 	struct global_resource_tag tag = get_fpa3_aura_resource_tag(aura.node);
 	int laura = aura.laura;
+
+	printk(KERN_INFO "vswtr: release_aura(%d) caller=%pS\n",
+	       laura, __builtin_return_address(0));
 
 	if (!__cvmx_fpa3_aura_valid(aura))
 		return -1;
@@ -182,10 +189,14 @@ cvmx_fpa3_reserve_pool(int node, int desired_pool_num)
 		rv = cvmx_resource_alloc_reverse(tag, owner);
 
 	if (rv < 0) {
+		printk(KERN_INFO "vswtr: reserve_pool node=%d want=%d FAILED caller=%pS\n",
+		       node, desired_pool_num, __builtin_return_address(0));
 		/* Desired pool is already in use */
 		return CVMX_FPA3_INVALID_POOL;
 	}
 
+	printk(KERN_INFO "vswtr: reserve_pool node=%d want=%d -> %d caller=%pS\n",
+	       node, desired_pool_num, rv, __builtin_return_address(0));
 	pool = __cvmx_fpa3_pool(node, rv);
 
 	return pool;
@@ -195,6 +206,9 @@ int cvmx_fpa3_release_pool(cvmx_fpa3_pool_t pool)
 {
 	struct global_resource_tag tag = get_fpa3_pool_resource_tag(pool.node);
 	int lpool = pool.lpool;
+
+	printk(KERN_INFO "vswtr: release_pool(%d) caller=%pS\n",
+	       lpool, __builtin_return_address(0));
 
 	if (!__cvmx_fpa3_pool_valid(pool))
 		return -1;

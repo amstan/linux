@@ -94,6 +94,16 @@ int cvmx_pko3_get_queue_base(int ipd_port)
 	unsigned i;
 	struct cvmx_xport xp = cvmx_helper_ipd_port_to_xport(ipd_port);
 
+	{
+		static int vswtr_n;
+
+		if (vswtr_n < 16) {
+			vswtr_n++;
+			printk(KERN_INFO "vswtr: pko_get_queue_base(%d) caller=%pS\n",
+			       ipd_port, __builtin_return_address(0));
+		}
+	}
+
 	/* get per-node table */
 	if (cvmx_unlikely(__cvmx_pko3_dq_table == NULL))
 		__cvmx_pko3_dq_table_setup();

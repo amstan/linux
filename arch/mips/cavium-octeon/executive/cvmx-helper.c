@@ -2571,6 +2571,8 @@ cvmx_helper_link_info_t cvmx_helper_link_autoconf(int xipd_port)
 	struct cvmx_xiface xi = cvmx_helper_xiface_to_node_interface(xiface);
 	int interface = xi.interface;
 
+	printk(KERN_INFO "vswtr: link_autoconf(port=%d) caller=%pS\n",
+	       xipd_port, __builtin_return_address(0));
 	if (interface == -1 || index == -1 ||
 	    index >= cvmx_helper_ports_on_interface(xiface)) {
 		link_info.u64 = 0;
@@ -2628,6 +2630,18 @@ cvmx_helper_link_info_t cvmx_helper_link_get(int xipd_port)
 	if (iface_node_ops[xi.node][xi.interface]->link_get)
 		result = iface_node_ops[xi.node][xi.interface]->link_get(xipd_port);
 
+	{
+		static u64 vswtr_link_last[64];
+
+		if (xipd_port >= 0 && xipd_port < 64 &&
+		    vswtr_link_last[xipd_port] != result.u64) {
+			vswtr_link_last[xipd_port] = result.u64;
+			printk(KERN_INFO "vswtr: link_get(%d) -> 0x%016llx caller=%pS\n",
+			       xipd_port, (unsigned long long)result.u64,
+			       __builtin_return_address(0));
+		}
+	}
+
 #ifndef CVMX_BUILD_FOR_LINUX_KERNEL
 	if (xipd_port >= 0)
 		__cvmx_update_link_led(xiface, index, result);
@@ -2659,6 +2673,10 @@ int cvmx_helper_link_set(int xipd_port, cvmx_helper_link_info_t link_info)
 	if (__cvmx_helper_xiface_is_null(xiface) || index == -1 ||
 	    index >= cvmx_helper_ports_on_interface(xiface))
 		return -1;
+
+	printk(KERN_INFO "vswtr: link_set(%d, 0x%016llx) caller=%pS\n",
+	       xipd_port, (unsigned long long)link_info.u64,
+	       __builtin_return_address(0));
 
 	if (iface_node_ops[xi.node][xi.interface]->link_set)
 		result = iface_node_ops[xi.node][xi.interface]->link_set(xipd_port, link_info);

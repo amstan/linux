@@ -298,6 +298,8 @@ int __cvmx_export_app_config_to_named_block(char * block_name)
 {
 	int bootmem_name_len;
 
+	printk(KERN_INFO "vswtr: export_app_config_to_named_block(\"%s\") caller=%pS\n",
+	       block_name, __builtin_return_address(0));
 	bootmem_name_len = strlen(block_name);
 	if (bootmem_name_len >= CVMX_BOOTMEM_NAME_LEN)
 		bootmem_name_len = (CVMX_BOOTMEM_NAME_LEN - 1);
@@ -338,6 +340,8 @@ EXPORT_SYMBOL(__cvmx_export_app_config_cleanup);
  */
 int __cvmx_export_config(void)
 {
+	printk(KERN_INFO "vswtr: __cvmx_export_config caller=%pS\n",
+	       __builtin_return_address(0));
 	if (cvmx_export_app_config)
 		return (*cvmx_export_app_config)();
 	return -1;

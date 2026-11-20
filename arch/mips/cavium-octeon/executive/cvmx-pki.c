@@ -71,6 +71,9 @@ void cvmx_pki_enable(int node)
 	cvmx_pki_sft_rst_t sft_rst;
 	cvmx_pki_buf_ctl_t buf_ctl;
 
+	printk(KERN_INFO "vswtr: pki_enable(node=%d) caller=%pS\n",
+	       node, __builtin_return_address(0));
+
 	sft_rst.u64 = cvmx_read_csr_node(node, CVMX_PKI_SFT_RST);
 	while (sft_rst.s.busy != 0)
 		sft_rst.u64 = cvmx_read_csr_node(node, CVMX_PKI_SFT_RST);

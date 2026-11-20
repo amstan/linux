@@ -28,6 +28,8 @@ int octeon_fpa3_init(int node)
 	int			i;
 	int			aura_cnt;
 
+	printk(KERN_INFO "vswtr: octeon_fpa3_init(node=%d) caller=%pS\n",
+	       node, __builtin_return_address(0));
 	mutex_lock(&octeon_fpa3_lock);
 
 	if (init_done)
@@ -88,6 +90,8 @@ int octeon_fpa3_pool_init(int			node,
 		goto error;
 	}
 
+	printk(KERN_INFO "vswtr: fpa3_pool_init want=%d -> %d num_ptrs=%d caller=%pS\n",
+	       pool_num, pool->lpool, num_ptrs, __builtin_return_address(0));
 	stack_size = (DIV_ROUND_UP(num_ptrs, 29) + 1) * 128;
 
 	cvmx_write_csr_node(node, CVMX_FPA_POOLX_CFG(pool->lpool), 0);
@@ -164,6 +168,9 @@ int octeon_fpa3_aura_init(cvmx_fpa3_pool_t	pool,
 		goto error;
 	}
 
+	printk(KERN_INFO "vswtr: fpa3_aura_init pool=%d want=%d -> %d num_bufs=%d caller=%pS\n",
+	       pool.lpool, aura_num, aura->laura, num_bufs,
+	       __builtin_return_address(0));
 	limit *= 2; /* Allow twice the limit before saturation at zero. */
 
 	cvmx_write_csr_node(aura->node, CVMX_FPA_AURAX_CFG(aura->laura), 0);
@@ -215,6 +222,8 @@ int octeon_mem_fill_fpa3(int			node,
 	int	i;
 	int	rc = 0;
 
+	printk(KERN_INFO "vswtr: mem_fill_fpa3(aura=%d, %d bufs) caller=%pS\n",
+	       aura.laura, num_bufs, __builtin_return_address(0));
 	mutex_lock(&octeon_fpa3_lock);
 
 	for (i = 0; i < num_bufs; i++) {
